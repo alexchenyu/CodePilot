@@ -2,44 +2,43 @@ import { app, BrowserWindow, nativeImage, dialog } from 'electron';
 import path from 'path';
 import { spawn, execFileSync, ChildProcess } from 'child_process';
 import net from 'net';
+import os from 'os';
 
 let mainWindow: BrowserWindow | null = null;
 let serverProcess: ChildProcess | null = null;
 let serverPort: number | null = null;
 let serverErrors: string[] = [];
+let userShellEnv: Record<string, string> = {};
 
 const isDev = !app.isPackaged;
 
-function findNodePath(): string {
-  // Try to find the system Node.js binary
-  const candidates = [
-    '/usr/local/bin/node',
-    '/opt/homebrew/bin/node',
-    // Use `which` as fallback
-  ];
-
-  for (const p of candidates) {
-    try {
-      execFileSync(p, ['--version'], { timeout: 3000 });
-      return p;
-    } catch {
-      // not found, try next
-    }
-  }
-
-  // Fallback: use `which node` to find it
+/**
+ * Read the user's full shell environment by running a login shell.
+ * When Electron is launched from Dock/Finder, process.env is very limited
+ * and won't include vars from .zshrc/.bashrc (e.g. API keys).
+ */
+function loadUserShellEnv(): Record<string, string> {
   try {
-    const result = execFileSync('/usr/bin/which', ['node'], {
-      timeout: 3000,
-      env: {
-        ...process.env,
-        PATH: `/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:${process.env.PATH || ''}`,
-      },
+    const shell = process.env.SHELL || '/bin/zsh';
+    const result = execFileSync(shell, ['-ilc', 'env'], {
+      timeout: 5000,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
-    return result.toString().trim();
-  } catch {
-    // Last resort: use Electron as Node
-    return process.execPath;
+    const env: Record<string, string> = {};
+    for (const line of result.split('\n')) {
+      const idx = line.indexOf('=');
+      if (idx > 0) {
+        const key = line.slice(0, idx);
+        const value = line.slice(idx + 1);
+        env[key] = value;
+      }
+    }
+    console.log(`Loaded ${Object.keys(env).length} env vars from user shell`);
+    return env;
+  } catch (err) {
+    console.warn('Failed to load user shell env:', err);
+    return {};
   }
 }
 
@@ -106,13 +105,21 @@ function startServer(port: number): ChildProcess {
 
   serverErrors = [];
 
+  const home = os.homedir();
+  const basePath = `/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin`;
+  const shellPath = userShellEnv.PATH || process.env.PATH || '';
+
   const env: Record<string, string> = {
+    ...userShellEnv,
     ...process.env as Record<string, string>,
+    // Ensure user shell env vars override (especially API keys)
+    ...userShellEnv,
     PORT: String(port),
     HOSTNAME: '127.0.0.1',
     CLAUDE_GUI_DATA_DIR: app.getPath('userData'),
     ELECTRON_RUN_AS_NODE: '1',
-    PATH: `/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:${process.env.PATH || ''}`,
+    HOME: home,
+    PATH: `${basePath}:${home}/.npm-global/bin:${home}/.local/bin:${home}/.claude/bin:${shellPath}`,
   };
 
   const child = spawn(nodePath, [serverPath], {
@@ -175,6 +182,9 @@ function createWindow(port: number) {
 }
 
 app.whenReady().then(async () => {
+  // Load user's full shell environment (API keys, PATH, etc.)
+  userShellEnv = loadUserShellEnv();
+
   // Set macOS Dock icon
   if (process.platform === 'darwin' && app.dock) {
     const iconPath = getIconPath();
