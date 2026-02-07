@@ -33,6 +33,7 @@ extraResources:
   - from: build/
     to: .
     filter: ["icon.*"]
+afterPack: scripts/after-pack.js
 asarUnpack:
   - "**/*.node"
   - "**/better-sqlite3/**"
