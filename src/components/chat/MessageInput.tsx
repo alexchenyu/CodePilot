@@ -867,7 +867,7 @@ export function MessageInput({
 
                   {/* Mode dropdown */}
                   {modeMenuOpen && (
-                    <div className="absolute bottom-full left-0 mb-1.5 w-56 rounded-lg border bg-popover shadow-lg overflow-hidden z-50">
+                    <div className="fixed bottom-16 right-2 left-2 sm:absolute sm:bottom-full sm:left-0 sm:right-auto sm:w-56 mb-1.5 rounded-lg border bg-popover shadow-lg overflow-hidden z-50">
                       <div className="py-1">
                         {MODE_OPTIONS.map((opt) => {
                           const isActive = opt.value === mode;
@@ -908,7 +908,7 @@ export function MessageInput({
                   </PromptInputButton>
 
                   {modelMenuOpen && (
-                    <div className="absolute bottom-full left-0 mb-1.5 w-64 max-sm:right-0 max-sm:left-auto rounded-lg border bg-popover shadow-lg overflow-hidden z-50">
+                    <div className="fixed bottom-16 right-2 left-2 sm:absolute sm:bottom-full sm:right-0 sm:left-auto sm:w-64 mb-1.5 rounded-lg border bg-popover shadow-lg overflow-hidden z-50">
                       <div className="py-1 max-h-60 sm:max-h-80 overflow-y-auto">
                         {MODEL_OPTIONS.map((opt) => {
                           const isActive = opt.value === currentModelValue;

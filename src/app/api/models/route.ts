@@ -18,7 +18,7 @@ interface ModelInfo {
 // Cache models for 5 minutes to avoid repeated slow CLI calls
 let cachedModels: ModelInfo[] | null = null;
 let cacheTimestamp = 0;
-const CACHE_TTL = 5 * 60 * 1000;
+const CACHE_TTL = 30 * 60 * 1000; // 30 minutes
 
 /**
  * Parse the text output of `agent models` or `agent --list-models` into structured data.
@@ -71,9 +71,10 @@ export async function GET() {
 
     // Use `agent models` to get available models
     // The CLI writes ANSI escape codes, so we strip them
+    // Note: this command can take 60-90s on first run (loading models from server)
     const { stdout, stderr } = await execFileAsync(agentPath, ['models'], {
-      timeout: 30000,
-      env: { ...process.env, PATH: getExpandedPath() },
+      timeout: 120000,
+      env: { ...process.env, PATH: getExpandedPath(), HOME: process.env.HOME || '' },
     });
 
     const raw = (stdout || stderr || '')
