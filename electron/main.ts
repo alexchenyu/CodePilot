@@ -415,14 +415,14 @@ app.whenReady().then(async () => {
     let hasClaude = false;
     let claudeVersion: string | undefined;
     try {
-      const claudeOpts = process.platform === 'win32'
+      const agentOpts = process.platform === 'win32'
         ? { ...execOpts, shell: true }
         : execOpts;
-      const result = execFileSync('claude', ['--version'], claudeOpts);
+      const result = execFileSync('agent', ['--version'], agentOpts);
       claudeVersion = result.trim();
       hasClaude = true;
     } catch {
-      // claude not found
+      // agent CLI not found
     }
 
     return { hasNode, nodeVersion, hasClaude, claudeVersion };
@@ -442,7 +442,7 @@ app.whenReady().then(async () => {
     }
     steps.push(
       { id: 'check-node', label: 'Checking Node.js', status: 'pending' },
-      { id: 'install-claude', label: 'Installing Claude Code', status: 'pending' },
+      { id: 'install-agent', label: 'Installing Cursor Agent CLI', status: 'pending' },
       { id: 'verify', label: 'Verifying installation', status: 'pending' },
     );
 
@@ -579,15 +579,15 @@ app.whenReady().then(async () => {
           return;
         }
 
-        // Step 2: Install Claude Code via npm
-        setStep('install-claude', 'running');
-        addLog('Running: npm install -g @anthropic-ai/claude-code');
+        // Step 2: Install Cursor Agent CLI via npm
+        setStep('install-agent', 'running');
+        addLog('Running: npm install -g @anthropic-ai/cursor-agent');
 
         const npmInstallSuccess = await new Promise<boolean>((resolve) => {
           const isWin = process.platform === 'win32';
           const npmCmd = isWin ? 'npm.cmd' : 'npm';
 
-          const child = spawn(npmCmd, ['install', '-g', '@anthropic-ai/claude-code'], {
+          const child = spawn(npmCmd, ['install', '-g', '@anthropic-ai/cursor-agent'], {
             env: execEnv,
             shell: isWin,
             stdio: ['ignore', 'pipe', 'pipe'],
@@ -630,18 +630,18 @@ app.whenReady().then(async () => {
         });
 
         if (installState.status === 'cancelled') {
-          setStep('install-claude', 'failed', 'Cancelled');
+          setStep('install-agent', 'failed', 'Cancelled');
           return;
         }
 
         if (!npmInstallSuccess) {
-          setStep('install-claude', 'failed', 'npm install failed. Check logs for details.');
+          setStep('install-agent', 'failed', 'npm install failed. Check logs for details.');
           installState.status = 'failed';
           sendProgress();
           return;
         }
 
-        setStep('install-claude', 'success');
+        setStep('install-agent', 'success');
 
         // Step 3: Verify claude is available
         setStep('verify', 'running');
@@ -649,13 +649,13 @@ app.whenReady().then(async () => {
           const verifyOpts = process.platform === 'win32'
             ? { timeout: 5000, encoding: 'utf-8' as const, env: execEnv, shell: true }
             : { timeout: 5000, encoding: 'utf-8' as const, env: execEnv };
-          const claudeResult = execFileSync('claude', ['--version'], verifyOpts);
-          addLog(`Claude Code installed: ${claudeResult.trim()}`);
+          const agentResult = execFileSync('agent', ['--version'], verifyOpts);
+          addLog(`Cursor Agent CLI installed: ${agentResult.trim()}`);
           setStep('verify', 'success');
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           addLog(`Verification failed: ${msg}`);
-          setStep('verify', 'failed', 'Claude Code was installed but could not be verified.');
+          setStep('verify', 'failed', 'Cursor Agent CLI was installed but could not be verified.');
           installState.status = 'failed';
           sendProgress();
           return;

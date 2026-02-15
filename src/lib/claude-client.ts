@@ -1,160 +1,10 @@
-import { query } from '@anthropic-ai/claude-agent-sdk';
-import type {
-  SDKMessage,
-  SDKAssistantMessage,
-  SDKUserMessage,
-  SDKResultMessage,
-  SDKPartialAssistantMessage,
-  SDKSystemMessage,
-  SDKToolProgressMessage,
-  Options,
-  McpStdioServerConfig,
-  McpSSEServerConfig,
-  McpHttpServerConfig,
-  McpServerConfig,
-  NotificationHookInput,
-  PostToolUseHookInput,
-} from '@anthropic-ai/claude-agent-sdk';
-import type { ClaudeStreamOptions, SSEEvent, TokenUsage, MCPServerConfig, PermissionRequestEvent, FileAttachment } from '@/types';
+import { spawn } from 'child_process';
+import type { ClaudeStreamOptions, SSEEvent, FileAttachment } from '@/types';
 import { isImageFile } from '@/types';
-import { registerPendingPermission } from './permission-registry';
-import { getSetting, getActiveProvider } from './db';
-import { findClaudeBinary, findGitBash, getExpandedPath } from './platform';
+import { findAgentBinary, getExpandedPath } from './platform';
 import os from 'os';
 import fs from 'fs';
 import path from 'path';
-
-/**
- * Sanitize a string for use as an environment variable value.
- * Removes null bytes and control characters that cause spawn EINVAL.
- */
-function sanitizeEnvValue(value: string): string {
-  // eslint-disable-next-line no-control-regex
-  return value.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
-}
-
-/**
- * Sanitize all values in an env record so child_process.spawn won't
- * throw EINVAL due to invalid characters or non-string values.
- * On Windows, spawn is strict: every env value MUST be a string.
- * Spreading process.env can include undefined values which cause EINVAL.
- */
-function sanitizeEnv(env: Record<string, string>): Record<string, string> {
-  const clean: Record<string, string> = {};
-  for (const [key, value] of Object.entries(env)) {
-    if (typeof value === 'string') {
-      clean[key] = sanitizeEnvValue(value);
-    }
-  }
-  return clean;
-}
-
-/**
- * On Windows, npm installs CLI tools as .cmd wrappers that can't be
- * spawned without shell:true. Parse the wrapper to extract the real
- * .js script path so we can pass it to the SDK directly.
- */
-function resolveScriptFromCmd(cmdPath: string): string | undefined {
-  try {
-    const content = fs.readFileSync(cmdPath, 'utf-8');
-    const cmdDir = path.dirname(cmdPath);
-
-    // npm .cmd wrappers typically contain a line like:
-    //   "%~dp0\node_modules\@anthropic-ai\claude-code\cli.js" %*
-    // Match paths containing claude-code or claude-agent and ending in .js
-    const patterns = [
-      // Quoted: "%~dp0\...\cli.js"
-      /"%~dp0\\([^"]*claude[^"]*\.js)"/i,
-      // Unquoted: %~dp0\...\cli.js
-      /%~dp0\\(\S*claude\S*\.js)/i,
-      // Quoted with %dp0%: "%dp0%\...\cli.js"
-      /"%dp0%\\([^"]*claude[^"]*\.js)"/i,
-    ];
-
-    for (const re of patterns) {
-      const m = content.match(re);
-      if (m) {
-        const resolved = path.normalize(path.join(cmdDir, m[1]));
-        if (fs.existsSync(resolved)) return resolved;
-      }
-    }
-  } catch {
-    // ignore read errors
-  }
-  return undefined;
-}
-
-let cachedClaudePath: string | null | undefined;
-
-function findClaudePath(): string | undefined {
-  if (cachedClaudePath !== undefined) return cachedClaudePath || undefined;
-  const found = findClaudeBinary();
-  cachedClaudePath = found ?? null;
-  return found;
-}
-
-/**
- * Convert our MCPServerConfig to the SDK's McpServerConfig format.
- * Supports stdio, sse, and http transport types.
- */
-function toSdkMcpConfig(
-  servers: Record<string, MCPServerConfig>
-): Record<string, McpServerConfig> {
-  const result: Record<string, McpServerConfig> = {};
-  for (const [name, config] of Object.entries(servers)) {
-    const transport = config.type || 'stdio';
-
-    switch (transport) {
-      case 'sse': {
-        if (!config.url) {
-          console.warn(`[mcp] SSE server "${name}" is missing url, skipping`);
-          continue;
-        }
-        const sseConfig: McpSSEServerConfig = {
-          type: 'sse',
-          url: config.url,
-        };
-        if (config.headers && Object.keys(config.headers).length > 0) {
-          sseConfig.headers = config.headers;
-        }
-        result[name] = sseConfig;
-        break;
-      }
-
-      case 'http': {
-        if (!config.url) {
-          console.warn(`[mcp] HTTP server "${name}" is missing url, skipping`);
-          continue;
-        }
-        const httpConfig: McpHttpServerConfig = {
-          type: 'http',
-          url: config.url,
-        };
-        if (config.headers && Object.keys(config.headers).length > 0) {
-          httpConfig.headers = config.headers;
-        }
-        result[name] = httpConfig;
-        break;
-      }
-
-      case 'stdio':
-      default: {
-        if (!config.command) {
-          console.warn(`[mcp] stdio server "${name}" is missing command, skipping`);
-          continue;
-        }
-        const stdioConfig: McpStdioServerConfig = {
-          command: config.command,
-          args: config.args,
-          env: config.env,
-        };
-        result[name] = stdioConfig;
-        break;
-      }
-    }
-  }
-  return result;
-}
 
 /**
  * Format an SSE line from an event object
@@ -164,36 +14,20 @@ function formatSSE(event: SSEEvent): string {
 }
 
 /**
- * Extract text content from an SDK assistant message
+ * Strip ANSI escape codes and terminal control sequences from a string.
  */
-function extractTextFromMessage(msg: SDKAssistantMessage): string {
-  const parts: string[] = [];
-  for (const block of msg.message.content) {
-    if (block.type === 'text') {
-      parts.push(block.text);
-    }
-  }
-  return parts.join('');
+function stripAnsi(data: string): string {
+  return data
+    .replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '')       // CSI sequences (colors, cursor)
+    .replace(/\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)/g, '') // OSC sequences
+    .replace(/\x1B\([A-Z]/g, '')                   // Character set selection
+    .replace(/\x1B[=>]/g, '')                       // Keypad mode
+    .replace(/\x1B\[\?[0-9;]*[a-zA-Z]/g, '')       // Private CSI (e.g. ?25h cursor show)
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '') // Control chars (keep \t \n \r)
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n');
 }
 
-/**
- * Extract token usage from an SDK result message
- */
-function extractTokenUsage(msg: SDKResultMessage): TokenUsage | null {
-  if (!msg.usage) return null;
-  return {
-    input_tokens: msg.usage.input_tokens,
-    output_tokens: msg.usage.output_tokens,
-    cache_read_input_tokens: msg.usage.cache_read_input_tokens ?? 0,
-    cache_creation_input_tokens: msg.usage.cache_creation_input_tokens ?? 0,
-    cost_usd: 'total_cost_usd' in msg ? msg.total_cost_usd : undefined,
-  };
-}
-
-/**
- * Stream Claude responses using the Agent SDK.
- * Returns a ReadableStream of SSE-formatted strings.
- */
 /**
  * Get file paths for non-image attachments. If the file already has a
  * persisted filePath (written by the uploads route), reuse it. Otherwise
@@ -206,7 +40,6 @@ function getUploadedFilePaths(files: FileAttachment[], workDir: string): string[
     if (file.filePath) {
       paths.push(file.filePath);
     } else {
-      // Fallback: write file to disk (should not happen in normal flow)
       if (!uploadDir) {
         uploadDir = path.join(workDir, '.codepilot-uploads');
         if (!fs.existsSync(uploadDir)) {
@@ -223,6 +56,204 @@ function getUploadedFilePaths(files: FileAttachment[], workDir: string): string[
   return paths;
 }
 
+/**
+ * Extract tool name and args from Cursor Agent CLI tool_call object.
+ * The tool_call has a shape like { readToolCall: { args: {...} } }
+ * or { writeToolCall: { args: {...} } }, etc.
+ */
+function extractToolInfo(toolCall: Record<string, unknown>): { name: string; args: Record<string, unknown> } {
+  const keys = Object.keys(toolCall);
+  if (keys.length === 0) return { name: 'unknown', args: {} };
+  const key = keys[0];
+  const inner = toolCall[key] as Record<string, unknown> | undefined;
+  const name = key.replace(/ToolCall$/, '').replace(/^./, c => c.toUpperCase());
+  return { name, args: (inner?.args as Record<string, unknown>) || {} };
+}
+
+/**
+ * Extract tool result content from a completed tool_call.
+ */
+function extractToolResult(toolCall: Record<string, unknown>): { content: string; isError: boolean } {
+  const keys = Object.keys(toolCall);
+  if (keys.length === 0) return { content: '', isError: false };
+  const key = keys[0];
+  const inner = toolCall[key] as Record<string, unknown> | undefined;
+  const result = inner?.result as Record<string, unknown> | undefined;
+
+  if (!result) return { content: '', isError: false };
+
+  if (result.success) {
+    const success = result.success as Record<string, unknown>;
+    if (typeof success.content === 'string') return { content: success.content, isError: false };
+    return { content: JSON.stringify(success), isError: false };
+  }
+
+  if (result.error) {
+    const errContent = typeof result.error === 'string' ? result.error : JSON.stringify(result.error);
+    return { content: errContent, isError: true };
+  }
+
+  return { content: JSON.stringify(result), isError: false };
+}
+
+/**
+ * Process a single JSON message from the Cursor Agent CLI
+ * and enqueue corresponding SSE events.
+ */
+function processAgentMessage(
+  msg: Record<string, unknown>,
+  controller: ReadableStreamDefaultController<string>,
+) {
+  const type = msg.type as string;
+
+  switch (type) {
+    case 'system': {
+      if (msg.subtype === 'init') {
+        controller.enqueue(formatSSE({
+          type: 'status',
+          data: JSON.stringify({
+            session_id: msg.session_id,
+            model: msg.model,
+            tools: [],
+          }),
+        }));
+      }
+      break;
+    }
+
+    case 'thinking': {
+      if (msg.subtype === 'delta' && msg.text) {
+        controller.enqueue(formatSSE({ type: 'thinking', data: msg.text as string }));
+      }
+      break;
+    }
+
+    case 'assistant': {
+      if (msg.timestamp_ms) {
+        // Streaming delta (has timestamp_ms)
+        const message = msg.message as { content?: Array<{ type: string; text?: string }> } | undefined;
+        const text = message?.content?.[0]?.text || '';
+        if (text) {
+          controller.enqueue(formatSSE({ type: 'text', data: text }));
+        }
+      }
+      // Final complete message (no timestamp_ms) is handled by sentStreamingDelta logic in caller
+      else {
+        const message = msg.message as { content?: Array<{ type: string; text?: string }> } | undefined;
+        const text = message?.content?.[0]?.text || '';
+        if (text) {
+          controller.enqueue(formatSSE({ type: 'text', data: text }));
+        }
+      }
+      break;
+    }
+
+    case 'tool_call': {
+      const toolCall = msg.tool_call as Record<string, unknown> | undefined;
+      if (!toolCall) break;
+
+      if (msg.subtype === 'started') {
+        const { name, args } = extractToolInfo(toolCall);
+        controller.enqueue(formatSSE({
+          type: 'tool_use',
+          data: JSON.stringify({
+            id: msg.call_id,
+            name,
+            input: args,
+          }),
+        }));
+      } else if (msg.subtype === 'completed') {
+        const { content, isError } = extractToolResult(toolCall);
+        controller.enqueue(formatSSE({
+          type: 'tool_result',
+          data: JSON.stringify({
+            tool_use_id: msg.call_id,
+            content,
+            is_error: isError,
+          }),
+        }));
+      }
+      break;
+    }
+
+    case 'result': {
+      controller.enqueue(formatSSE({
+        type: 'result',
+        data: JSON.stringify({
+          subtype: msg.subtype,
+          is_error: msg.is_error,
+          duration_ms: msg.duration_ms,
+          session_id: msg.session_id,
+          usage: null,
+        }),
+      }));
+      break;
+    }
+  }
+}
+
+/**
+ * Escape a string for safe embedding in a single-quoted shell argument.
+ * 'hello "world"' → 'hello "world"'
+ * "it's" → 'it'"'"'s'
+ */
+function shellEscape(s: string): string {
+  return "'" + s.replace(/'/g, "'\"'\"'") + "'";
+}
+
+/**
+ * Build the full shell command string for the agent invocation.
+ * Each arg is individually shell-escaped.
+ */
+function buildShellCommand(agentPath: string, args: string[]): string {
+  return [shellEscape(agentPath), ...args.map(shellEscape)].join(' ');
+}
+
+/**
+ * Spawn the agent CLI with a PTY wrapper so that stdout is line-buffered
+ * (real-time streaming). Without a PTY, Node.js-based CLIs buffer stdout
+ * when it's a pipe, causing all output to arrive only on process exit.
+ *
+ * On Linux/macOS: `script -qec "command" /dev/null`
+ * On Windows: direct spawn (no PTY wrapper available)
+ */
+function spawnAgentWithPty(
+  agentPath: string,
+  args: string[],
+  env: Record<string, string>,
+  cwd: string,
+) {
+  const shellCmd = buildShellCommand(agentPath, args);
+
+  if (process.platform === 'linux') {
+    // Linux: script -qec "command" /dev/null
+    return spawn('script', ['-qec', shellCmd, '/dev/null'], {
+      env: env as NodeJS.ProcessEnv,
+      cwd,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+  } else if (process.platform === 'darwin') {
+    // macOS: script -q /dev/null bash -c "command"
+    return spawn('script', ['-q', '/dev/null', 'bash', '-c', shellCmd], {
+      env: env as NodeJS.ProcessEnv,
+      cwd,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+  } else {
+    // Windows: direct spawn, no PTY wrapper
+    return spawn(agentPath, args, {
+      env: env as NodeJS.ProcessEnv,
+      cwd,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+  }
+}
+
+/**
+ * Stream Cursor Agent responses by spawning the `agent` CLI in headless mode.
+ * Uses `script` as a PTY wrapper to ensure real-time streaming output.
+ * Returns a ReadableStream of SSE-formatted strings.
+ */
 export function streamClaude(options: ClaudeStreamOptions): ReadableStream<string> {
   const {
     prompt,
@@ -230,453 +261,181 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
     model,
     systemPrompt,
     workingDirectory,
-    mcpServers,
     abortController,
     permissionMode,
     files,
-    toolTimeoutSeconds = 0,
   } = options;
 
   return new ReadableStream<string>({
     async start(controller) {
       try {
-        // Build env for the Claude Code subprocess.
-        // Start with process.env (includes user shell env from Electron's loadUserShellEnv).
-        // Then overlay any API config the user set in CodePilot settings (optional).
-        const sdkEnv: Record<string, string> = { ...process.env as Record<string, string> };
+        // Build command arguments
+        const args: string[] = [
+          '--print',
+          '--output-format', 'stream-json',
+          '--stream-partial-output',
+          '--trust',
+        ];
 
-        // Ensure HOME/USERPROFILE are set so Claude Code can find ~/.claude/commands/
-        if (!sdkEnv.HOME) sdkEnv.HOME = os.homedir();
-        if (!sdkEnv.USERPROFILE) sdkEnv.USERPROFILE = os.homedir();
-        // Ensure SDK subprocess has expanded PATH (consistent with Electron mode)
-        sdkEnv.PATH = getExpandedPath();
+        const workDir = workingDirectory || os.homedir();
+        args.push('--workspace', workDir);
 
-        // On Windows, auto-detect Git Bash if not already configured
-        if (process.platform === 'win32' && !process.env.CLAUDE_CODE_GIT_BASH_PATH) {
-          const gitBashPath = findGitBash();
-          if (gitBashPath) {
-            sdkEnv.CLAUDE_CODE_GIT_BASH_PATH = gitBashPath;
-          }
-        }
-
-        // Try to get config from active provider first
-        const activeProvider = getActiveProvider();
-
-        if (activeProvider && activeProvider.api_key) {
-          // Clear all existing ANTHROPIC_* variables to prevent conflicts
-          for (const key of Object.keys(sdkEnv)) {
-            if (key.startsWith('ANTHROPIC_')) {
-              delete sdkEnv[key];
-            }
-          }
-
-          // Inject provider config — set both token variants so extra_env can clear the unwanted one
-          sdkEnv.ANTHROPIC_AUTH_TOKEN = activeProvider.api_key;
-          sdkEnv.ANTHROPIC_API_KEY = activeProvider.api_key;
-          if (activeProvider.base_url) {
-            sdkEnv.ANTHROPIC_BASE_URL = activeProvider.base_url;
-          }
-
-          // Inject extra environment variables
-          // Empty string values mean "delete this variable" (e.g. clear ANTHROPIC_API_KEY for AUTH_TOKEN-only providers)
-          try {
-            const extraEnv = JSON.parse(activeProvider.extra_env || '{}');
-            for (const [key, value] of Object.entries(extraEnv)) {
-              if (typeof value === 'string') {
-                if (value === '') {
-                  delete sdkEnv[key];
-                } else {
-                  sdkEnv[key] = value;
-                }
-              }
-            }
-          } catch {
-            // ignore malformed extra_env
-          }
-        } else {
-          // No active provider — check legacy DB settings first, then fall back to
-          // environment variables already present in process.env (copied into sdkEnv above).
-          // This allows users who set ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL
-          // in their shell environment to use them without configuring a provider in the UI.
-          const appToken = getSetting('anthropic_auth_token');
-          const appBaseUrl = getSetting('anthropic_base_url');
-          if (appToken) {
-            sdkEnv.ANTHROPIC_AUTH_TOKEN = appToken;
-          }
-          if (appBaseUrl) {
-            sdkEnv.ANTHROPIC_BASE_URL = appBaseUrl;
-          }
-          // If neither legacy settings nor env vars provide a key, log a warning
-          if (!appToken && !sdkEnv.ANTHROPIC_API_KEY && !sdkEnv.ANTHROPIC_AUTH_TOKEN) {
-            console.warn('[claude-client] No API key found: no active provider, no legacy settings, and no ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN in environment');
-          }
-        }
-
-        // Check if dangerously_skip_permissions is enabled in app settings
-        const skipPermissions = getSetting('dangerously_skip_permissions') === 'true';
-
-        const queryOptions: Options = {
-          cwd: workingDirectory || os.homedir(),
-          abortController,
-          includePartialMessages: true,
-          permissionMode: skipPermissions
-            ? 'bypassPermissions'
-            : ((permissionMode as Options['permissionMode']) || 'acceptEdits'),
-          env: sanitizeEnv(sdkEnv),
-        };
-
-        if (skipPermissions) {
-          queryOptions.allowDangerouslySkipPermissions = true;
-        }
-
-        // Find claude binary for packaged app where PATH is limited.
-        // On Windows, npm installs Claude CLI as a .cmd wrapper which cannot
-        // be spawned directly without shell:true. Parse the wrapper to
-        // extract the real .js script path and pass that to the SDK instead.
-        const claudePath = findClaudePath();
-        if (claudePath) {
-          const ext = path.extname(claudePath).toLowerCase();
-          if (ext === '.cmd' || ext === '.bat') {
-            const scriptPath = resolveScriptFromCmd(claudePath);
-            if (scriptPath) {
-              queryOptions.pathToClaudeCodeExecutable = scriptPath;
-            } else {
-              console.warn('[claude-client] Could not resolve .js path from .cmd wrapper, falling back to SDK resolution:', claudePath);
-            }
-          } else {
-            queryOptions.pathToClaudeCodeExecutable = claudePath;
-          }
+        // Resume session if we have an ID from a previous conversation turn
+        if (sdkSessionId) {
+          args.push('--resume', sdkSessionId);
         }
 
         if (model) {
-          queryOptions.model = model;
+          args.push('--model', model);
         }
 
-        if (systemPrompt) {
-          // Use preset append mode to keep Claude Code's default system prompt
-          // (which includes skills, working directory awareness, etc.)
-          queryOptions.systemPrompt = {
-            type: 'preset',
-            preset: 'claude_code',
-            append: systemPrompt,
-          };
+        // Map permission modes to agent CLI modes
+        if (permissionMode === 'plan') {
+          args.push('--mode', 'plan');
+        } else if (permissionMode === 'default') {
+          args.push('--mode', 'ask');
         }
 
-        // Load MCP servers: use passed-in config, or auto-read from config files
-        let effectiveMcpServers = mcpServers;
-        if (!effectiveMcpServers || Object.keys(effectiveMcpServers).length === 0) {
-          try {
-            const userConfigPath = path.join(os.homedir(), '.claude.json');
-            const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
-            let merged: Record<string, MCPServerConfig> = {};
-            if (fs.existsSync(userConfigPath)) {
-              const userConfig = JSON.parse(fs.readFileSync(userConfigPath, 'utf-8'));
-              if (userConfig.mcpServers) merged = { ...merged, ...userConfig.mcpServers };
-            }
-            if (fs.existsSync(settingsPath)) {
-              const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
-              if (settings.mcpServers) merged = { ...merged, ...settings.mcpServers };
-            }
-            if (Object.keys(merged).length > 0) effectiveMcpServers = merged;
-          } catch {
-            // ignore config read errors
-          }
-        }
-        if (effectiveMcpServers && Object.keys(effectiveMcpServers).length > 0) {
-          queryOptions.mcpServers = toSdkMcpConfig(effectiveMcpServers);
-        }
-
-        // Resume session if we have an SDK session ID from a previous conversation turn
-        if (sdkSessionId) {
-          queryOptions.resume = sdkSessionId;
-        }
-
-        // Permission handler: sends SSE event and waits for user response
-        queryOptions.canUseTool = async (toolName, input, opts) => {
-          const permissionRequestId = `perm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-          const permEvent: PermissionRequestEvent = {
-            permissionRequestId,
-            toolName,
-            toolInput: input,
-            suggestions: opts.suggestions as PermissionRequestEvent['suggestions'],
-            decisionReason: opts.decisionReason,
-            blockedPath: opts.blockedPath,
-            toolUseId: opts.toolUseID,
-            description: undefined,
-          };
-
-          // Send permission_request SSE event to the client
-          controller.enqueue(formatSSE({
-            type: 'permission_request',
-            data: JSON.stringify(permEvent),
-          }));
-
-          // Wait for user response (resolved by POST /api/chat/permission)
-          // Store original input so registry can inject updatedInput on allow
-          return registerPendingPermission(permissionRequestId, input, opts.signal);
-        };
-
-        // Hooks: capture notifications and tool completion events
-        queryOptions.hooks = {
-          Notification: [{
-            hooks: [async (input) => {
-              const notif = input as NotificationHookInput;
-              controller.enqueue(formatSSE({
-                type: 'status',
-                data: JSON.stringify({
-                  notification: true,
-                  title: notif.title,
-                  message: notif.message,
-                }),
-              }));
-              return {};
-            }],
-          }],
-          PostToolUse: [{
-            hooks: [async (input) => {
-              const toolEvent = input as PostToolUseHookInput;
-              controller.enqueue(formatSSE({
-                type: 'tool_result',
-                data: JSON.stringify({
-                  tool_use_id: toolEvent.tool_use_id,
-                  content: typeof toolEvent.tool_response === 'string'
-                    ? toolEvent.tool_response
-                    : JSON.stringify(toolEvent.tool_response),
-                  is_error: false,
-                }),
-              }));
-              return {};
-            }],
-          }],
-        };
-
-        // Capture real-time stderr output from Claude Code process
-        queryOptions.stderr = (data: string) => {
-          // Diagnostic: log raw stderr data length to server console
-          console.log(`[stderr] received ${data.length} bytes, first 200 chars:`, data.slice(0, 200).replace(/[\x00-\x1F\x7F]/g, '?'));
-          // Strip ANSI escape codes, OSC sequences, and control characters
-          // but preserve tabs (\x09) and carriage returns (\x0D)
-          const cleaned = data
-            .replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '')   // CSI sequences (colors, cursor)
-            .replace(/\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)/g, '') // OSC sequences
-            .replace(/\x1B\([A-Z]/g, '')               // Character set selection
-            .replace(/\x1B[=>]/g, '')                   // Keypad mode
-            .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '') // Control chars (keep \t \n \r)
-            .replace(/\r\n/g, '\n')                    // Normalize CRLF
-            .replace(/\r/g, '\n')                      // Convert remaining CR to LF
-            .replace(/\n{3,}/g, '\n\n')                // Collapse multiple blank lines
-            .trim();
-          if (cleaned) {
-            controller.enqueue(formatSSE({
-              type: 'tool_output',
-              data: cleaned,
-            }));
-          }
-        };
-
-        // Build the prompt with file attachments.
-        // Images → sent as multimodal base64 content blocks (vision).
-        // Non-image files → saved to disk and referenced via Read tool.
-        let finalPrompt: string | AsyncIterable<SDKUserMessage> = prompt;
+        // Build the final prompt with file references
+        let finalPrompt = prompt;
 
         if (files && files.length > 0) {
-          const imageFiles = files.filter(f => isImageFile(f.type));
           const nonImageFiles = files.filter(f => !isImageFile(f.type));
 
-          // Save non-image files to disk for Read tool access
-          let textPrompt = prompt;
           if (nonImageFiles.length > 0) {
-            const workDir = workingDirectory || os.homedir();
             const savedPaths = getUploadedFilePaths(nonImageFiles, workDir);
             const fileReferences = savedPaths
               .map((p, i) => `[User attached file: ${p} (${nonImageFiles[i].name})]`)
               .join('\n');
-            textPrompt = `${fileReferences}\n\nPlease read the attached file(s) above using your Read tool, then respond to the user's message:\n\n${prompt}`;
+            finalPrompt = `${fileReferences}\n\nPlease read the attached file(s) above, then respond to the user's message:\n\n${prompt}`;
           }
 
-          // If there are images, build a multimodal SDKUserMessage
+          const imageFiles = files.filter(f => isImageFile(f.type));
           if (imageFiles.length > 0) {
-            const contentBlocks: Array<
-              | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
-              | { type: 'text'; text: string }
-            > = [];
-
-            for (const img of imageFiles) {
-              contentBlocks.push({
-                type: 'image',
-                source: {
-                  type: 'base64',
-                  media_type: img.type || 'image/png',
-                  data: img.data,
-                },
-              });
-            }
-
-            contentBlocks.push({ type: 'text', text: textPrompt });
-
-            const userMessage: SDKUserMessage = {
-              type: 'user',
-              message: {
-                role: 'user',
-                content: contentBlocks,
-              },
-              parent_tool_use_id: null,
-              session_id: sdkSessionId || '',
-            };
-
-            // Create a single-message async iterable
-            finalPrompt = (async function* () {
-              yield userMessage;
-            })();
-          } else {
-            finalPrompt = textPrompt;
+            finalPrompt = `[Note: ${imageFiles.length} image(s) were attached but cannot be displayed in CLI mode.]\n\n${finalPrompt}`;
           }
         }
 
-        const conversation = query({
-          prompt: finalPrompt,
-          options: queryOptions,
+        if (systemPrompt) {
+          finalPrompt = `[System context: ${systemPrompt}]\n\n${finalPrompt}`;
+        }
+
+        args.push(finalPrompt);
+
+        // Find agent binary
+        const agentPath = findAgentBinary() || 'agent';
+
+        // Build env with expanded PATH
+        const spawnEnv: Record<string, string> = {};
+        for (const [key, value] of Object.entries(process.env)) {
+          if (typeof value === 'string') {
+            spawnEnv[key] = value;
+          }
+        }
+        spawnEnv.PATH = getExpandedPath();
+        if (!spawnEnv.HOME) spawnEnv.HOME = os.homedir();
+        if (!spawnEnv.USERPROFILE) spawnEnv.USERPROFILE = os.homedir();
+        // Ensure agent doesn't try to render interactive UI
+        spawnEnv.TERM = 'dumb';
+
+        // Spawn with PTY wrapper for real-time streaming
+        const proc = spawnAgentWithPty(agentPath, args, spawnEnv, workDir);
+
+        // Handle abort — kill the process tree
+        const onAbort = () => {
+          if (!proc.killed) {
+            // Kill process group on Unix
+            try {
+              if (proc.pid && process.platform !== 'win32') {
+                process.kill(-proc.pid, 'SIGTERM');
+              } else {
+                proc.kill('SIGTERM');
+              }
+            } catch {
+              proc.kill('SIGTERM');
+            }
+          }
+        };
+        abortController?.signal.addEventListener('abort', onAbort);
+
+        // Buffer for incomplete lines from stdout
+        let buffer = '';
+        // Track whether we've sent any streaming deltas (for fallback detection)
+        let sentStreamingDelta = false;
+
+        proc.stdout.on('data', (data: Buffer) => {
+          // Strip ANSI codes from PTY output
+          const cleaned = stripAnsi(data.toString());
+          buffer += cleaned;
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || !trimmed.startsWith('{')) continue;
+            try {
+              const msg = JSON.parse(trimmed) as Record<string, unknown>;
+
+              // Track streaming deltas
+              if (msg.type === 'assistant' && msg.timestamp_ms) {
+                sentStreamingDelta = true;
+              }
+              // Skip final complete assistant message if we already sent deltas
+              if (msg.type === 'assistant' && !msg.timestamp_ms && sentStreamingDelta) {
+                sentStreamingDelta = false;
+                continue;
+              }
+
+              processAgentMessage(msg, controller);
+            } catch {
+              // Skip non-JSON lines (script header/footer, ANSI leftovers, etc.)
+            }
+          }
         });
 
-        let lastAssistantText = '';
-        let tokenUsage: TokenUsage | null = null;
+        // With PTY wrapper, stderr from agent also comes through stdout.
+        // But proc.stderr still exists for the wrapper process itself.
+        proc.stderr?.on('data', (data: Buffer) => {
+          const cleaned = stripAnsi(data.toString()).trim();
+          if (cleaned) {
+            controller.enqueue(formatSSE({ type: 'tool_output', data: cleaned }));
+          }
+        });
 
-        for await (const message of conversation) {
-          if (abortController?.signal.aborted) {
-            break;
+        proc.on('close', (code) => {
+          // Process remaining buffer
+          if (buffer.trim() && buffer.trim().startsWith('{')) {
+            try {
+              const msg = JSON.parse(buffer.trim()) as Record<string, unknown>;
+              processAgentMessage(msg, controller);
+            } catch {
+              // skip
+            }
           }
 
-          switch (message.type) {
-            case 'assistant': {
-              const assistantMsg = message as SDKAssistantMessage;
-              // Text deltas are handled by stream_event for real-time streaming.
-              // Only track lastAssistantText here and process tool_use blocks.
-              const text = extractTextFromMessage(assistantMsg);
-              if (text) {
-                lastAssistantText = text;
-              }
-
-              // Check for tool use blocks
-              for (const block of assistantMsg.message.content) {
-                if (block.type === 'tool_use') {
-                  controller.enqueue(formatSSE({
-                    type: 'tool_use',
-                    data: JSON.stringify({
-                      id: block.id,
-                      name: block.name,
-                      input: block.input,
-                    }),
-                  }));
-                }
-              }
-              break;
-            }
-
-            case 'user': {
-              // Tool execution results come back as user messages with tool_result blocks
-              const userMsg = message as SDKUserMessage;
-              const content = userMsg.message.content;
-              if (Array.isArray(content)) {
-                for (const block of content) {
-                  if (block.type === 'tool_result') {
-                    const resultContent = typeof block.content === 'string'
-                      ? block.content
-                      : Array.isArray(block.content)
-                        ? block.content
-                            .filter((c: { type: string }) => c.type === 'text')
-                            .map((c: { text: string }) => c.text)
-                            .join('\n')
-                        : String(block.content ?? '');
-                    controller.enqueue(formatSSE({
-                      type: 'tool_result',
-                      data: JSON.stringify({
-                        tool_use_id: block.tool_use_id,
-                        content: resultContent,
-                        is_error: block.is_error || false,
-                      }),
-                    }));
-                  }
-                }
-              }
-              break;
-            }
-
-            case 'stream_event': {
-              const streamEvent = message as SDKPartialAssistantMessage;
-              const evt = streamEvent.event;
-              if (evt.type === 'content_block_delta' && 'delta' in evt) {
-                const delta = evt.delta;
-                if ('text' in delta && delta.text) {
-                  controller.enqueue(formatSSE({ type: 'text', data: delta.text }));
-                }
-              }
-              break;
-            }
-
-            case 'system': {
-              const sysMsg = message as SDKSystemMessage;
-              if ('subtype' in sysMsg) {
-                if (sysMsg.subtype === 'init') {
-                  controller.enqueue(formatSSE({
-                    type: 'status',
-                    data: JSON.stringify({
-                      session_id: sysMsg.session_id,
-                      model: sysMsg.model,
-                      tools: sysMsg.tools,
-                    }),
-                  }));
-                }
-              }
-              break;
-            }
-
-            case 'tool_progress': {
-              const progressMsg = message as SDKToolProgressMessage;
-              controller.enqueue(formatSSE({
-                type: 'tool_output',
-                data: JSON.stringify({
-                  _progress: true,
-                  tool_use_id: progressMsg.tool_use_id,
-                  tool_name: progressMsg.tool_name,
-                  elapsed_time_seconds: progressMsg.elapsed_time_seconds,
-                }),
-              }));
-              // Auto-timeout: abort if tool runs longer than configured threshold
-              if (toolTimeoutSeconds > 0 && progressMsg.elapsed_time_seconds >= toolTimeoutSeconds) {
-                controller.enqueue(formatSSE({
-                  type: 'tool_timeout',
-                  data: JSON.stringify({
-                    tool_name: progressMsg.tool_name,
-                    elapsed_seconds: Math.round(progressMsg.elapsed_time_seconds),
-                  }),
-                }));
-                abortController?.abort();
-              }
-              break;
-            }
-
-            case 'result': {
-              const resultMsg = message as SDKResultMessage;
-              tokenUsage = extractTokenUsage(resultMsg);
-              controller.enqueue(formatSSE({
-                type: 'result',
-                data: JSON.stringify({
-                  subtype: resultMsg.subtype,
-                  is_error: resultMsg.is_error,
-                  num_turns: resultMsg.num_turns,
-                  duration_ms: resultMsg.duration_ms,
-                  usage: tokenUsage,
-                  session_id: resultMsg.session_id,
-                }),
-              }));
-              break;
-            }
+          // script wrapper returns the exit code of the child command
+          if (code !== 0 && code !== null) {
+            controller.enqueue(formatSSE({
+              type: 'error',
+              data: `Agent process exited with code ${code}`,
+            }));
           }
-        }
+          controller.enqueue(formatSSE({ type: 'done', data: '' }));
+          controller.close();
+        });
 
-        controller.enqueue(formatSSE({ type: 'done', data: '' }));
-        controller.close();
+        proc.on('error', (err) => {
+          controller.enqueue(formatSSE({
+            type: 'error',
+            data: `Failed to start agent: ${err.message}`,
+          }));
+          controller.enqueue(formatSSE({ type: 'done', data: '' }));
+          controller.close();
+        });
+
+        // Close stdin immediately
+        proc.stdin?.end();
+
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         controller.enqueue(formatSSE({ type: 'error', data: errorMessage }));

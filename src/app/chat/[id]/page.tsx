@@ -2,10 +2,11 @@
 
 import { useEffect, useState, useRef, useCallback, use } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import type { Message, MessagesResponse, ChatSession } from '@/types';
 import { ChatView } from '@/components/chat/ChatView';
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Loading02Icon, PencilEdit01Icon } from "@hugeicons/core-free-icons";
+import { Loading02Icon, PencilEdit01Icon, ArrowLeft01Icon } from "@hugeicons/core-free-icons";
 import { Input } from '@/components/ui/input';
 import { usePanel } from '@/hooks/usePanel';
 
@@ -15,6 +16,7 @@ interface ChatSessionPageProps {
 
 export default function ChatSessionPage({ params }: ChatSessionPageProps) {
   const { id } = use(params);
+  const router = useRouter();
   const [messages, setMessages] = useState<Message[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -162,17 +164,26 @@ export default function ChatSessionPage({ params }: ChatSessionPageProps) {
       {/* Chat title bar */}
       {sessionTitle && (
         <div
-          className="flex items-center justify-center px-4 pb-2 gap-1"
+          className="flex items-center px-2 pb-2 pt-1 gap-1 sm:justify-center sm:px-4"
           style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
         >
+          {/* Mobile back button */}
+          <button
+            className="sm:hidden shrink-0 p-1.5 -ml-0.5 rounded-md hover:bg-muted transition-colors"
+            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+            onClick={() => router.push('/chat')}
+          >
+            <HugeiconsIcon icon={ArrowLeft01Icon} className="h-4 w-4 text-muted-foreground" />
+          </button>
+
           {projectName && (
             <>
-              <span className="text-xs text-muted-foreground shrink-0">{projectName}</span>
-              <span className="text-xs text-muted-foreground shrink-0">/</span>
+              <span className="text-xs text-muted-foreground shrink-0 hidden sm:inline">{projectName}</span>
+              <span className="text-xs text-muted-foreground shrink-0 hidden sm:inline">/</span>
             </>
           )}
           {isEditingTitle ? (
-            <div style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+            <div className="flex-1 sm:flex-initial" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
               <Input
                 ref={titleInputRef}
                 value={editTitle}
@@ -184,7 +195,7 @@ export default function ChatSessionPage({ params }: ChatSessionPageProps) {
             </div>
           ) : (
             <div
-              className="flex items-center gap-1 group cursor-default max-w-md"
+              className="flex items-center gap-1 group cursor-default min-w-0 flex-1 sm:flex-initial sm:max-w-md"
               style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
             >
               <h2 className="text-sm font-medium text-foreground/80 truncate">
@@ -192,7 +203,7 @@ export default function ChatSessionPage({ params }: ChatSessionPageProps) {
               </h2>
               <button
                 onClick={handleStartEditTitle}
-                className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0 p-0.5 rounded hover:bg-muted"
+                className="opacity-0 group-hover:opacity-100 sm:transition-opacity shrink-0 p-0.5 rounded hover:bg-muted max-sm:hidden"
               >
                 <HugeiconsIcon icon={PencilEdit01Icon} className="h-3 w-3 text-muted-foreground" />
               </button>

@@ -164,7 +164,7 @@ export function InstallWizard({
         setLogs((prev) => [
           ...prev,
           `Node.js ${result.nodeVersion} found.`,
-          `Claude Code ${result.claudeVersion} already installed.`,
+          `Cursor Agent ${result.claudeVersion} already installed.`,
         ]);
         setPhase("already-installed");
         return;
@@ -175,13 +175,13 @@ export function InstallWizard({
         setLogs((prev) => [
           ...prev,
           `Node.js ${result.nodeVersion} found.`,
-          "Claude Code CLI not detected.",
+          "Cursor Agent CLI not detected.",
         ]);
       } else {
         setLogs((prev) => [
           ...prev,
           "Node.js not found.",
-          "Claude Code CLI not detected.",
+          "Cursor Agent CLI not detected.",
         ]);
       }
       setPhase("confirm");
@@ -248,11 +248,11 @@ export function InstallWizard({
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Install Claude Code</DialogTitle>
+          <DialogTitle>Install Cursor Agent</DialogTitle>
           <DialogDescription>
             {phase === "confirm"
-              ? "Claude Code CLI was not detected. Install it now?"
-              : "Automatically install Claude Code CLI"}
+              ? "Cursor Agent CLI was not detected. Install it now?"
+              : "Automatically install Cursor Agent CLI"}
           </DialogDescription>
         </DialogHeader>
 
@@ -310,12 +310,12 @@ export function InstallWizard({
                   </p>
                 )}
                 <p className="text-amber-700 dark:text-amber-400">
-                  Claude Code CLI — not found
+                  Cursor Agent CLI — not found
                 </p>
               </div>
               <p className="text-sm text-muted-foreground">
                 Click <strong>Install</strong> to automatically set up{" "}
-                {prereqs && !prereqs.hasNode ? "Node.js and " : ""}Claude Code CLI.
+                {prereqs && !prereqs.hasNode ? "Node.js and " : ""}Cursor Agent CLI.
               </p>
             </div>
           )}
@@ -329,7 +329,7 @@ export function InstallWizard({
                   Already installed
                 </p>
                 <p className="text-muted-foreground text-xs">
-                  Claude Code is already available.
+                  Cursor Agent is already available.
                 </p>
               </div>
             </div>
@@ -344,7 +344,7 @@ export function InstallWizard({
                   Installation complete
                 </p>
                 <p className="text-muted-foreground text-xs">
-                  Claude Code CLI has been installed successfully.
+                  Cursor Agent CLI has been installed successfully.
                 </p>
               </div>
             </div>

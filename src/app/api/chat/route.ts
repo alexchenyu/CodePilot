@@ -99,7 +99,7 @@ export async function POST(request: NextRequest) {
         })
       : undefined;
 
-    // Stream Claude response, using SDK session ID for resume if available
+    // Stream agent response, using session ID for resume if available
     const stream = streamClaude({
       prompt: content,
       sessionId: session_id,
@@ -110,7 +110,6 @@ export async function POST(request: NextRequest) {
       abortController,
       permissionMode,
       files: fileAttachments,
-      toolTimeoutSeconds: toolTimeout || 120,
     });
 
     // Tee the stream: one for client, one for collecting the response

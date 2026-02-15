@@ -1,17 +1,29 @@
-import type { PermissionResult } from '@anthropic-ai/claude-agent-sdk';
+/**
+ * Permission registry for Cursor Agent.
+ *
+ * Note: In the Cursor Agent CLI `--print` mode, permission handling is managed
+ * by the agent process itself (default permission mode). This registry is kept
+ * as a minimal stub for API compatibility with the permission route, but the
+ * actual permission flow is handled by the agent CLI internally.
+ */
+
+export interface PermissionResult {
+  behavior: 'allow' | 'deny';
+  updatedInput?: Record<string, unknown>;
+  updatedPermissions?: unknown[];
+  message?: string;
+}
 
 interface PendingPermission {
   resolve: (result: PermissionResult) => void;
   createdAt: number;
   abortSignal?: AbortSignal;
-  toolInput: Record<string, unknown>; // Original tool input for updatedInput in allow response
+  toolInput: Record<string, unknown>;
 }
 
 const TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
 // Use globalThis to ensure the Map is shared across all module instances.
-// In Next.js dev mode (Turbopack), different API routes may load separate
-// module instances, so a module-level variable would NOT be shared.
 const globalKey = '__pendingPermissions__' as const;
 
 function getMap(): Map<string, PendingPermission> {
@@ -44,7 +56,6 @@ export function registerPendingPermission(
   toolInput: Record<string, unknown>,
   abortSignal?: AbortSignal,
 ): Promise<PermissionResult> {
-  // Lazily clean up expired entries on each registration
   cleanupExpired();
 
   const map = getMap();
@@ -57,7 +68,6 @@ export function registerPendingPermission(
       toolInput,
     });
 
-    // Auto-deny if the abort signal fires (client disconnect / stop button)
     if (abortSignal) {
       const onAbort = () => {
         if (map.has(id)) {
@@ -82,7 +92,6 @@ export function resolvePendingPermission(
   const entry = map.get(id);
   if (!entry) return false;
 
-  // SDK requires updatedInput when allowing — inject the original tool input
   if (result.behavior === 'allow' && !result.updatedInput) {
     result = { ...result, updatedInput: entry.toolInput };
   }

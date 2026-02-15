@@ -157,7 +157,7 @@ export function GeneralSection() {
             <AlertDialogDescription asChild>
               <div className="space-y-2">
                 <p>
-                  This will bypass all permission checks. Claude will be able to
+                  This will bypass all permission checks. The agent will be able to
                   execute any tool action without asking for your confirmation,
                   including:
                 </p>

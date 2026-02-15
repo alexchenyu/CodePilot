@@ -157,7 +157,7 @@ export function ImportSessionDialog({
             Import CLI Session
           </DialogTitle>
           <DialogDescription>
-            Browse and import conversations from Claude Code CLI. Imported
+            Browse and import conversations from Cursor Agent CLI. Imported
             sessions can be resumed in CodePilot.
           </DialogDescription>
         </DialogHeader>
@@ -205,7 +205,7 @@ export function ImportSessionDialog({
                 <p className="text-sm">
                   {searchQuery
                     ? "No matching sessions"
-                    : "No Claude Code CLI sessions found"}
+                    : "No Cursor Agent CLI sessions found"}
                 </p>
                 <p className="text-xs mt-1 opacity-60">
                   {searchQuery

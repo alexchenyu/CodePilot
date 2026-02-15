@@ -1,7 +1,6 @@
 import { NextRequest } from 'next/server';
-import { resolvePendingPermission } from '@/lib/permission-registry';
+import { resolvePendingPermission, PermissionResult } from '@/lib/permission-registry';
 import type { PermissionResponseRequest } from '@/types';
-import type { PermissionResult, PermissionUpdate } from '@anthropic-ai/claude-agent-sdk';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -22,7 +21,7 @@ export async function POST(request: NextRequest) {
     if (decision.behavior === 'allow') {
       result = {
         behavior: 'allow',
-        updatedPermissions: decision.updatedPermissions as unknown as PermissionUpdate[],
+        updatedPermissions: decision.updatedPermissions as unknown[],
       };
     } else {
       result = {

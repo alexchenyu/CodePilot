@@ -14,6 +14,7 @@ interface ToolResultInfo {
 
 export interface SSECallbacks {
   onText: (accumulated: string) => void;
+  onThinking?: (accumulated: string) => void;
   onToolUse: (tool: ToolUseInfo) => void;
   onToolResult: (result: ToolResultInfo) => void;
   onToolOutput: (data: string) => void;
@@ -29,6 +30,8 @@ export interface SSECallbacks {
  * Parse a single SSE line (after stripping "data: " prefix) and dispatch
  * to the appropriate callback.  Returns the updated accumulated text.
  */
+let thinkingAccumulated = '';
+
 function handleSSEEvent(
   event: SSEEvent,
   accumulated: string,
@@ -39,6 +42,12 @@ function handleSSEEvent(
       const next = accumulated + event.data;
       callbacks.onText(next);
       return next;
+    }
+
+    case 'thinking': {
+      thinkingAccumulated += event.data;
+      callbacks.onThinking?.(thinkingAccumulated);
+      return accumulated;
     }
 
     case 'tool_use': {
@@ -86,7 +95,7 @@ function handleSSEEvent(
       try {
         const statusData = JSON.parse(event.data);
         if (statusData.session_id) {
-          callbacks.onStatus(`Connected (${statusData.model || 'claude'})`);
+          callbacks.onStatus(`Connected (${statusData.model || 'agent'})`);
         } else if (statusData.notification) {
           callbacks.onStatus(statusData.message || statusData.title || undefined);
         } else {
@@ -156,6 +165,7 @@ export async function consumeSSEStream(
   let buffer = '';
   let accumulated = '';
   let tokenUsage: TokenUsage | null = null;
+  thinkingAccumulated = ''; // Reset thinking state for new stream
 
   const wrappedCallbacks: SSECallbacks = {
     ...callbacks,
@@ -205,6 +215,7 @@ export function useSSEStream() {
       // Proxy through ref so callers always hit the latest callbacks
       const proxied: SSECallbacks = {
         onText: (a) => callbacksRef.current?.onText(a),
+        onThinking: (a) => callbacksRef.current?.onThinking?.(a),
         onToolUse: (t) => callbacksRef.current?.onToolUse(t),
         onToolResult: (r) => callbacksRef.current?.onToolResult(r),
         onToolOutput: (d) => callbacksRef.current?.onToolOutput(d),

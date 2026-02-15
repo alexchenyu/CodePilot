@@ -123,6 +123,23 @@
     @apply bg-background text-foreground;
   }
 
+  /* Mobile: prevent rubber-banding scroll on iOS */
+  html, body {
+    overscroll-behavior: none;
+  }
+
+  /* Mobile touch improvements */
+  @media (max-width: 767px) {
+    /* Prevent text selection on UI elements */
+    button, a, nav {
+      -webkit-tap-highlight-color: transparent;
+    }
+    /* Better touch targets */
+    input, textarea, select {
+      font-size: 16px; /* Prevent iOS zoom on focus */
+    }
+  }
+
   /* Selection color */
   ::selection {
     background: oklch(0.7 0.15 260 / 30%);

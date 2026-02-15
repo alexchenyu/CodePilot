@@ -33,6 +33,8 @@ import type { ChatSession } from "@/types";
 interface ChatListPanelProps {
   open: boolean;
   width?: number;
+  /** Mobile full-screen overlay mode */
+  mobile?: boolean;
 }
 
 function formatRelativeTime(dateStr: string): string {
@@ -113,7 +115,7 @@ const MODE_BADGE_CONFIG = {
   ask: { label: "Ask", className: "bg-green-500/10 text-green-500" },
 } as const;
 
-export function ChatListPanel({ open, width }: ChatListPanelProps) {
+export function ChatListPanel({ open, width, mobile }: ChatListPanelProps) {
   const pathname = usePathname();
   const router = useRouter();
   const { streamingSessionId, pendingApprovalSessionId } = usePanel();
@@ -299,27 +301,39 @@ export function ChatListPanel({ open, width }: ChatListPanelProps) {
 
   return (
     <aside
-      className="hidden h-full shrink-0 flex-col overflow-hidden bg-sidebar lg:flex"
-      style={{ width: width ?? 240 }}
+      className={cn(
+        "h-full shrink-0 flex-col overflow-hidden bg-sidebar",
+        mobile ? "flex w-full" : "hidden lg:flex"
+      )}
+      style={mobile ? undefined : { width: width ?? 240 }}
     >
-      {/* Header - extra top padding for macOS traffic lights */}
-      <div className="flex h-12 shrink-0 items-center justify-between px-3 mt-5 pl-6">
-        <span className="text-[13px] font-semibold tracking-tight text-sidebar-foreground">
+      {/* Header - extra top padding for macOS traffic lights (desktop only) */}
+      <div className={cn(
+        "flex shrink-0 items-center justify-between px-3",
+        mobile ? "h-14 pt-2 pl-4" : "h-12 mt-5 pl-6"
+      )}>
+        <span className={cn(
+          "font-semibold tracking-tight text-sidebar-foreground",
+          mobile ? "text-base" : "text-[13px]"
+        )}>
           Threads
         </span>
         <ConnectionStatus />
       </div>
 
       {/* New Chat + New Project */}
-      <div className="flex items-center gap-2 px-3 pb-2">
+      <div className={cn("flex items-center gap-2 px-3", mobile ? "pb-3" : "pb-2")}>
         <Button
           variant="outline"
           size="sm"
-          className="flex-1 justify-center gap-1.5 h-8 text-xs"
+          className={cn(
+            "flex-1 justify-center gap-1.5",
+            mobile ? "h-10 text-sm" : "h-8 text-xs"
+          )}
           disabled={creatingChat}
           onClick={handleNewChat}
         >
-          <HugeiconsIcon icon={PlusSignIcon} className="h-3.5 w-3.5" />
+          <HugeiconsIcon icon={PlusSignIcon} className={mobile ? "h-4 w-4" : "h-3.5 w-3.5"} />
           New Chat
         </Button>
         <Tooltip>
@@ -327,10 +341,10 @@ export function ChatListPanel({ open, width }: ChatListPanelProps) {
             <Button
               variant="outline"
               size="icon-sm"
-              className="h-8 w-8 shrink-0"
+              className={mobile ? "h-10 w-10 shrink-0" : "h-8 w-8 shrink-0"}
               onClick={() => setFolderPickerOpen(true)}
             >
-              <HugeiconsIcon icon={FolderOpenIcon} className="h-3.5 w-3.5" />
+              <HugeiconsIcon icon={FolderOpenIcon} className={mobile ? "h-4 w-4" : "h-3.5 w-3.5"} />
               <span className="sr-only">Open project folder</span>
             </Button>
           </TooltipTrigger>
@@ -386,8 +400,9 @@ export function ChatListPanel({ open, width }: ChatListPanelProps) {
                   {/* Folder header */}
                   <div
                     className={cn(
-                      "flex items-center gap-1 rounded-md px-2 py-1 cursor-pointer select-none transition-colors",
-                      "hover:bg-accent/50"
+                      "flex items-center gap-1 rounded-md px-2 cursor-pointer select-none transition-colors",
+                      "hover:bg-accent/50",
+                      mobile ? "py-2.5" : "py-1"
                     )}
                     onClick={() => toggleProject(group.workingDirectory)}
                     onMouseEnter={() =>
@@ -467,7 +482,8 @@ export function ChatListPanel({ open, width }: ChatListPanelProps) {
                             <Link
                               href={`/chat/${session.id}`}
                               className={cn(
-                                "flex items-center gap-1.5 rounded-md pl-7 pr-2 py-1.5 transition-all duration-150 min-w-0",
+                                "flex items-center gap-1.5 rounded-md pl-7 pr-2 transition-all duration-150 min-w-0",
+                                mobile ? "py-3" : "py-1.5",
                                 isActive
                                   ? "bg-sidebar-accent text-sidebar-accent-foreground"
                                   : "text-sidebar-foreground hover:bg-accent/50"

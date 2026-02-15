@@ -31,8 +31,8 @@ function ExtensionsPageInner() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="px-6 pt-4 pb-0">
-        <h1 className="text-xl font-semibold mb-3">Extensions</h1>
+      <div className="px-4 pt-3 pb-0 sm:px-6 sm:pt-4">
+        <h1 className="text-lg font-semibold mb-3 sm:text-xl">Extensions</h1>
         <Tabs value={tab} onValueChange={(v) => setTab(v as ExtTab)}>
           <TabsList>
             <TabsTrigger value="skills">Skills</TabsTrigger>
@@ -40,7 +40,7 @@ function ExtensionsPageInner() {
           </TabsList>
         </Tabs>
       </div>
-      <div className="flex-1 overflow-hidden p-6 flex flex-col min-h-0">
+      <div className="flex-1 overflow-hidden p-4 sm:p-6 flex flex-col min-h-0">
         {tab === "skills" && <SkillsManager />}
         {tab === "mcp" && <McpManager />}
       </div>

@@ -10,7 +10,7 @@ export interface ChatSession {
   model: string;
   system_prompt: string;
   working_directory: string;
-  sdk_session_id: string; // Claude Agent SDK session ID for resume
+  sdk_session_id: string; // Agent CLI session ID for resume
   project_name: string;
   status: 'active' | 'archived';
   mode?: 'code' | 'plan' | 'ask';
@@ -303,9 +303,10 @@ export interface SkillResponse {
 
 export type SSEEventType =
   | 'text'               // text content delta
+  | 'thinking'           // thinking/reasoning delta
   | 'tool_use'           // tool invocation info
   | 'tool_result'        // tool execution result
-  | 'tool_output'        // streaming tool output (stderr from SDK process)
+  | 'tool_output'        // streaming tool output (stderr from agent process)
   | 'tool_timeout'       // tool execution timed out
   | 'status'             // status update (compacting, etc.)
   | 'result'             // final result with usage stats
@@ -426,7 +427,7 @@ export function formatFileSize(bytes: number): string {
 export interface ClaudeStreamOptions {
   prompt: string;
   sessionId: string;
-  sdkSessionId?: string; // SDK session ID for resuming conversations
+  sdkSessionId?: string; // Agent CLI session ID for resuming conversations
   model?: string;
   systemPrompt?: string;
   workingDirectory?: string;

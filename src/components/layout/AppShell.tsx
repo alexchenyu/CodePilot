@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { usePathname } from "next/navigation";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { NavRail } from "./NavRail";
+import { MobileNav } from "./MobileNav";
 import { ChatListPanel } from "./ChatListPanel";
 import { RightPanel } from "./RightPanel";
 import { ResizeHandle } from "./ResizeHandle";
@@ -28,12 +29,26 @@ function defaultViewMode(filePath: string): PreviewViewMode {
   return RENDERED_EXTENSIONS.has(ext) ? "rendered" : "source";
 }
 
+const MD_BREAKPOINT = 768;
 const LG_BREAKPOINT = 1024;
 const CHECK_INTERVAL = 8 * 60 * 60 * 1000; // 8 hours
 const DISMISSED_VERSION_KEY = "codepilot_dismissed_update_version";
 
-export function AppShell({ children }: { children: React.ReactNode }) {
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const mql = window.matchMedia(`(max-width: ${MD_BREAKPOINT - 1}px)`);
+    setIsMobile(mql.matches);
+    const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches);
+    mql.addEventListener("change", handler);
+    return () => mql.removeEventListener("change", handler);
+  }, []);
+  return isMobile;
+}
+
+function AppShellInner({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const isMobile = useIsMobile();
 
   const [chatListOpen, setChatListOpenRaw] = useState(false);
 
@@ -81,6 +96,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       setChatListOpenRaw(false);
     }
   }, [isChatRoute]);
+
+  // Close mobile overlay when navigating to a chat
+  useEffect(() => {
+    if (isMobile && isChatDetailRoute) {
+      setChatListOpenRaw(false);
+    }
+  }, [isMobile, isChatDetailRoute, pathname]);
+
   const [panelOpen, setPanelOpenRaw] = useState(false);
   const [panelContent, setPanelContent] = useState<PanelContent>("files");
   const [workingDirectory, setWorkingDirectory] = useState("");
@@ -115,25 +138,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, []);
 
   // Auto-open panel on chat detail routes, close on others
-  // Also close doc preview when navigating away or switching sessions
   useEffect(() => {
-    setPanelOpenRaw(isChatDetailRoute);
+    if (!isMobile) {
+      setPanelOpenRaw(isChatDetailRoute);
+    }
     setPreviewFileRaw(null);
-  }, [isChatDetailRoute, pathname]);
+  }, [isChatDetailRoute, pathname, isMobile]);
 
   const setPanelOpen = useCallback((open: boolean) => {
     setPanelOpenRaw(open);
   }, []);
 
-  // Keep chat list state in sync when resizing across the breakpoint (only on chat routes)
+  // Keep chat list state in sync when resizing across the breakpoint (only on chat routes, desktop only)
   useEffect(() => {
-    if (!isChatRoute) return;
+    if (!isChatRoute || isMobile) return;
     const mql = window.matchMedia(`(min-width: ${LG_BREAKPOINT}px)`);
     const handler = (e: MediaQueryListEvent) => setChatListOpenRaw(e.matches);
     mql.addEventListener("change", handler);
     setChatListOpenRaw(mql.matches);
     return () => mql.removeEventListener("change", handler);
-  }, [isChatRoute]);
+  }, [isChatRoute, isMobile]);
 
   // --- Skip-permissions indicator ---
   const [skipPermissionsActive, setSkipPermissionsActive] = useState(false);
@@ -150,7 +174,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  // Re-fetch when window gains focus / becomes visible instead of polling every 5s
   useEffect(() => {
     fetchSkipPermissions();
     const handleVisibility = () => {
@@ -199,7 +222,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
   }, [updateInfo]);
 
-  // Check on mount + every 8 hours
   useEffect(() => {
     checkForUpdates();
     const id = setInterval(checkForUpdates, CHECK_INTERVAL);
@@ -242,49 +264,91 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     [panelOpen, setPanelOpen, panelContent, workingDirectory, sessionId, sessionTitle, streamingSessionId, pendingApprovalSessionId, previewFile, setPreviewFile, previewViewMode]
   );
 
+  // Detect Electron environment
+  const isElectron =
+    typeof window !== "undefined" &&
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    !!(window as any).electronAPI;
+
   return (
     <UpdateContext.Provider value={updateContextValue}>
       <PanelContext.Provider value={panelContextValue}>
         <TooltipProvider delayDuration={300}>
-          <div className="flex h-screen overflow-hidden">
-            <NavRail
-              chatListOpen={chatListOpen}
-              onToggleChatList={() => setChatListOpen(!chatListOpen)}
-              hasUpdate={updateInfo?.updateAvailable ?? false}
-              skipPermissionsActive={skipPermissionsActive}
-            />
-            <ChatListPanel open={chatListOpen} width={chatListWidth} />
-            {chatListOpen && (
-              <ResizeHandle side="left" onResize={handleChatListResize} onResizeEnd={handleChatListResizeEnd} />
-            )}
-            <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-              {/* Electron draggable title bar region */}
-              <div
-                className="h-11 w-full shrink-0"
-                style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
-              />
+          {/* ========== MOBILE LAYOUT ========== */}
+          {isMobile ? (
+            <div className="flex h-[100dvh] flex-col overflow-hidden">
+              {/* Main content area */}
               <main className="relative flex-1 overflow-hidden">{children}</main>
-            </div>
-            {isChatDetailRoute && previewFile && (
-              <ResizeHandle side="right" onResize={handleDocPreviewResize} onResizeEnd={handleDocPreviewResizeEnd} />
-            )}
-            {isChatDetailRoute && previewFile && (
-              <DocPreview
-                filePath={previewFile}
-                viewMode={previewViewMode}
-                onViewModeChange={setPreviewViewMode}
-                onClose={() => setPreviewFile(null)}
-                width={docPreviewWidth}
+
+              {/* Bottom navigation bar */}
+              <MobileNav
+                chatListOpen={chatListOpen}
+                onToggleChatList={() => setChatListOpen(!chatListOpen)}
+                skipPermissionsActive={skipPermissionsActive}
               />
-            )}
-            {isChatDetailRoute && panelOpen && (
-              <ResizeHandle side="right" onResize={handleRightPanelResize} onResizeEnd={handleRightPanelResizeEnd} />
-            )}
-            {isChatDetailRoute && <RightPanel width={rightPanelWidth} />}
-          </div>
+
+              {/* Chat list overlay */}
+              {chatListOpen && (
+                <div className="fixed inset-0 z-40 flex flex-col bg-background">
+                  <ChatListPanel open={true} width={undefined} mobile />
+                </div>
+              )}
+            </div>
+          ) : (
+            /* ========== DESKTOP LAYOUT ========== */
+            <div className="flex h-screen overflow-hidden">
+              <NavRail
+                chatListOpen={chatListOpen}
+                onToggleChatList={() => setChatListOpen(!chatListOpen)}
+                hasUpdate={updateInfo?.updateAvailable ?? false}
+                skipPermissionsActive={skipPermissionsActive}
+              />
+              <ChatListPanel open={chatListOpen} width={chatListWidth} />
+              {chatListOpen && (
+                <ResizeHandle side="left" onResize={handleChatListResize} onResizeEnd={handleChatListResizeEnd} />
+              )}
+              <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+                {/* Electron draggable title bar region - only show in Electron */}
+                {isElectron && (
+                  <div
+                    className="h-11 w-full shrink-0"
+                    style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+                  />
+                )}
+                <main className="relative flex-1 overflow-hidden">{children}</main>
+              </div>
+              {isChatDetailRoute && previewFile && (
+                <ResizeHandle side="right" onResize={handleDocPreviewResize} onResizeEnd={handleDocPreviewResizeEnd} />
+              )}
+              {isChatDetailRoute && previewFile && (
+                <DocPreview
+                  filePath={previewFile}
+                  viewMode={previewViewMode}
+                  onViewModeChange={setPreviewViewMode}
+                  onClose={() => setPreviewFile(null)}
+                  width={docPreviewWidth}
+                />
+              )}
+              {isChatDetailRoute && panelOpen && (
+                <ResizeHandle side="right" onResize={handleRightPanelResize} onResizeEnd={handleRightPanelResizeEnd} />
+              )}
+              {isChatDetailRoute && <RightPanel width={rightPanelWidth} />}
+            </div>
+          )}
           <UpdateDialog />
         </TooltipProvider>
       </PanelContext.Provider>
     </UpdateContext.Provider>
   );
+}
+
+export function AppShell({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
+
+  // Login page renders without any shell chrome
+  if (pathname === "/login") {
+    return <>{children}</>;
+  }
+
+  return <AppShellInner>{children}</AppShellInner>;
 }

@@ -24,7 +24,7 @@ interface SidebarItem {
 const sidebarItems: SidebarItem[] = [
   { id: "general", label: "General", icon: Settings02Icon },
   { id: "providers", label: "Providers", icon: Plug01Icon },
-  { id: "cli", label: "Claude CLI", icon: CodeIcon },
+  { id: "cli", label: "Agent CLI", icon: CodeIcon },
 ];
 
 function getInitialSection(): Section {
@@ -59,16 +59,35 @@ export function SettingsLayout() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="border-b border-border/50 px-6 pt-4 pb-4">
-        <h1 className="text-xl font-semibold">Settings</h1>
-        <p className="text-sm text-muted-foreground">
-          Manage CodePilot and Claude CLI settings
+      <div className="border-b border-border/50 px-4 pt-3 pb-3 sm:px-6 sm:pt-4 sm:pb-4">
+        <h1 className="text-lg font-semibold sm:text-xl">Settings</h1>
+        <p className="text-xs text-muted-foreground sm:text-sm">
+          Manage CodePilot and Cursor Agent CLI settings
         </p>
       </div>
 
+      {/* Mobile: horizontal tabs */}
+      <div className="flex overflow-x-auto border-b border-border/50 sm:hidden">
+        {sidebarItems.map((item) => (
+          <button
+            key={item.id}
+            onClick={() => handleSectionChange(item.id)}
+            className={cn(
+              "flex items-center gap-2 whitespace-nowrap px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px",
+              activeSection === item.id
+                ? "border-foreground text-foreground"
+                : "border-transparent text-muted-foreground"
+            )}
+          >
+            <HugeiconsIcon icon={item.icon} className="h-4 w-4 shrink-0" />
+            {item.label}
+          </button>
+        ))}
+      </div>
+
       <div className="flex min-h-0 flex-1">
-        {/* Sidebar */}
-        <nav className="flex w-52 shrink-0 flex-col gap-1 border-r border-border/50 p-3">
+        {/* Desktop sidebar */}
+        <nav className="hidden sm:flex w-52 shrink-0 flex-col gap-1 border-r border-border/50 p-3">
           {sidebarItems.map((item) => (
             <button
               key={item.id}
@@ -87,7 +106,7 @@ export function SettingsLayout() {
         </nav>
 
         {/* Content */}
-        <div className="flex-1 overflow-auto p-6">
+        <div className="flex-1 overflow-auto p-4 sm:p-6">
           {activeSection === "general" && <GeneralSection />}
           {activeSection === "providers" && <ProviderManager />}
           {activeSection === "cli" && <CliSettingsSection />}

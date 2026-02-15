@@ -87,7 +87,7 @@ type PopoverMode = 'file' | 'skill' | null;
 // SDK-native commands (/compact, /init, /review) are sent as-is — the SDK handles them directly.
 const COMMAND_PROMPTS: Record<string, string> = {
   '/doctor': 'Run diagnostic checks on this project. Check system health, dependencies, configuration files, and report any issues.',
-  '/terminal-setup': 'Help me configure my terminal for optimal use with Claude Code. Check current setup and suggest improvements.',
+  '/terminal-setup': 'Help me configure my terminal for optimal use with Cursor Agent. Check current setup and suggest improvements.',
   '/memory': 'Show the current CLAUDE.md project memory file and help me review or edit it.',
 };
 
@@ -116,61 +116,12 @@ const MODE_OPTIONS: ModeOption[] = [
   { value: 'ask', label: 'Ask', icon: HelpCircleIcon, description: 'Answer questions only' },
 ];
 
-// Default Claude model options — labels are dynamically overridden by active provider
-const DEFAULT_MODEL_OPTIONS = [
-  { value: 'sonnet', label: 'Sonnet 4.5' },
-  { value: 'opus', label: 'Opus 4.6' },
-  { value: 'haiku', label: 'Haiku 4.5' },
+// Fallback model options if the API hasn't loaded yet
+const FALLBACK_MODEL_OPTIONS = [
+  { value: 'auto', label: 'Auto' },
+  { value: 'sonnet-4.5', label: 'Claude 4.5 Sonnet' },
+  { value: 'opus-4.6-thinking', label: 'Claude 4.6 Opus (Thinking)' },
 ];
-
-// Provider-specific model label mappings (alias → display name)
-const PROVIDER_MODEL_LABELS: Record<string, Record<string, string>> = {
-  // GLM Coding Plan (Z.AI / 智谱)
-  'https://api.z.ai/api/anthropic': {
-    sonnet: 'GLM-4.7',
-    opus: 'GLM-4.7',
-    haiku: 'GLM-4.5-Air',
-  },
-  'https://open.bigmodel.cn/api/anthropic': {
-    sonnet: 'GLM-4.7',
-    opus: 'GLM-4.7',
-    haiku: 'GLM-4.5-Air',
-  },
-  // Kimi Coding Plan
-  'https://api.kimi.com/coding/': {
-    sonnet: 'Kimi K2.5',
-    opus: 'Kimi K2.5',
-    haiku: 'Kimi K2.5',
-  },
-  // Moonshot Open Platform
-  'https://api.moonshot.ai/anthropic': {
-    sonnet: 'Kimi K2.5',
-    opus: 'Kimi K2.5',
-    haiku: 'Kimi K2.5',
-  },
-  'https://api.moonshot.cn/anthropic': {
-    sonnet: 'Kimi K2.5',
-    opus: 'Kimi K2.5',
-    haiku: 'Kimi K2.5',
-  },
-  // MiniMax Coding Plan
-  'https://api.minimaxi.com/anthropic': {
-    sonnet: 'MiniMax-M2.1',
-    opus: 'MiniMax-M2.1',
-    haiku: 'MiniMax-M2.1',
-  },
-  'https://api.minimax.io/anthropic': {
-    sonnet: 'MiniMax-M2.1',
-    opus: 'MiniMax-M2.1',
-    haiku: 'MiniMax-M2.1',
-  },
-  // OpenRouter — keeps Claude names, provider handles routing
-  'https://openrouter.ai/api': {
-    sonnet: 'Sonnet 4.5',
-    opus: 'Opus 4.6',
-    haiku: 'Haiku 4.5',
-  },
-};
 
 /**
  * Convert a data URL to a FileAttachment object.
@@ -358,34 +309,27 @@ export function MessageInput({
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [inputValue, setInputValue] = useState('');
   const [badge, setBadge] = useState<CommandBadge | null>(null);
-  const [activeProviderBaseUrl, setActiveProviderBaseUrl] = useState<string | null>(null);
-  const [activeProviderName, setActiveProviderName] = useState<string | null>(null);
+  const [dynamicModels, setDynamicModels] = useState<Array<{ value: string; label: string }> | null>(null);
 
-  // Fetch active provider to adapt model labels
+  // Fetch available models from Cursor Agent CLI
   useEffect(() => {
-    fetch('/api/providers')
+    fetch('/api/models')
       .then((r) => r.json())
       .then((data) => {
-        const active = (data.providers || []).find((p: { is_active: number }) => p.is_active === 1);
-        if (active) {
-          setActiveProviderBaseUrl(active.base_url || null);
-          setActiveProviderName(active.name || null);
-        } else {
-          setActiveProviderBaseUrl(null);
-          setActiveProviderName(null);
+        if (data.models && data.models.length > 0) {
+          setDynamicModels(
+            data.models.map((m: { id: string; label: string }) => ({
+              value: m.id,
+              label: m.label,
+            }))
+          );
         }
       })
       .catch(() => {});
   }, []);
 
-  // Compute model options based on active provider
-  const MODEL_OPTIONS = DEFAULT_MODEL_OPTIONS.map((opt) => {
-    if (activeProviderBaseUrl && PROVIDER_MODEL_LABELS[activeProviderBaseUrl]) {
-      const label = PROVIDER_MODEL_LABELS[activeProviderBaseUrl][opt.value];
-      if (label) return { ...opt, label };
-    }
-    return opt;
-  });
+  // Use dynamic models if available, otherwise fallback
+  const MODEL_OPTIONS = dynamicModels || FALLBACK_MODEL_OPTIONS;
 
   // Fetch files for @ mention
   const fetchFiles = useCallback(async (filter: string) => {
@@ -733,7 +677,7 @@ export function MessageInput({
     item.label.toLowerCase().includes(popoverFilter.toLowerCase())
   );
 
-  const currentModelValue = modelName || 'sonnet';
+  const currentModelValue = modelName || 'auto';
   const currentModelOption = MODEL_OPTIONS.find((m) => m.value === currentModelValue) || MODEL_OPTIONS[0];
   const currentMode = MODE_OPTIONS.find((m) => m.value === mode) || MODE_OPTIONS[0];
 
@@ -741,7 +685,7 @@ export function MessageInput({
   const chatStatus: ChatStatus = isStreaming ? 'streaming' : 'ready';
 
   return (
-    <div className="bg-background/80 backdrop-blur-lg px-4 py-3">
+    <div className="bg-background/80 backdrop-blur-lg px-2 py-2 sm:px-4 sm:py-3">
       <div className="mx-auto">
         <div className="relative">
           {/* Popover */}
@@ -755,7 +699,7 @@ export function MessageInput({
                 key={`${idx}-${item.value}`}
                 ref={idx === selectedIndex ? (el) => { el?.scrollIntoView({ block: 'nearest' }); } : undefined}
                 className={cn(
-                  "flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors",
+                  "flex w-full items-center gap-2 px-3 py-2.5 sm:py-1.5 text-left text-sm transition-colors",
                   idx === selectedIndex ? "bg-accent text-accent-foreground" : "hover:bg-accent/50"
                 )}
                 onClick={() => insertItem(item)}
@@ -900,7 +844,7 @@ export function MessageInput({
             <FileAttachmentsCapsules />
             <PromptInputTextarea
               ref={textareaRef}
-              placeholder={badge ? "Add details (optional), then press Enter..." : "Message Claude..."}
+              placeholder={badge ? "Add details (optional), then press Enter..." : "Message Cursor Agent..."}
               value={inputValue}
               onChange={(e) => handleInputChange(e.currentTarget.value)}
               onKeyDown={handleKeyDown}
@@ -931,7 +875,7 @@ export function MessageInput({
                             <button
                               key={opt.value}
                               className={cn(
-                                "flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors",
+                                "flex w-full items-center gap-2 px-3 py-2.5 sm:py-2 text-left text-sm transition-colors",
                                 isActive ? "bg-accent text-accent-foreground" : "hover:bg-accent/50"
                               )}
                               onClick={() => {
@@ -964,15 +908,15 @@ export function MessageInput({
                   </PromptInputButton>
 
                   {modelMenuOpen && (
-                    <div className="absolute bottom-full left-0 mb-1.5 w-48 rounded-lg border bg-popover shadow-lg overflow-hidden z-50">
-                      <div className="py-1">
+                    <div className="absolute bottom-full left-0 mb-1.5 w-64 max-sm:right-0 max-sm:left-auto rounded-lg border bg-popover shadow-lg overflow-hidden z-50">
+                      <div className="py-1 max-h-60 sm:max-h-80 overflow-y-auto">
                         {MODEL_OPTIONS.map((opt) => {
                           const isActive = opt.value === currentModelValue;
                           return (
                             <button
                               key={opt.value}
                               className={cn(
-                                "flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors",
+                                "flex w-full items-center gap-2 px-3 py-2.5 sm:py-1.5 text-left text-sm transition-colors",
                                 isActive ? "bg-accent text-accent-foreground" : "hover:bg-accent/50"
                               )}
                               onClick={() => {

@@ -150,12 +150,12 @@ export function ConnectionStatus() {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>
-              {connected ? "Claude Code Connected" : "Claude Code Not Connected"}
+              {connected ? "Cursor Agent Connected" : "Cursor Agent Not Connected"}
             </DialogTitle>
             <DialogDescription>
               {connected
-                ? `Claude Code CLI v${status?.version} is running and ready.`
-                : "Claude Code CLI is required to use this application."}
+                ? `Cursor Agent CLI v${status?.version} is running and ready.`
+                : "Cursor Agent CLI is required to use this application."}
             </DialogDescription>
           </DialogHeader>
 
@@ -177,23 +177,23 @@ export function ConnectionStatus() {
               </div>
 
               <div>
-                <h4 className="font-medium mb-1.5">1. Install Claude Code</h4>
+                <h4 className="font-medium mb-1.5">1. Install Cursor Agent CLI</h4>
                 <code className="block rounded-md bg-muted px-3 py-2 text-xs">
-                  npm install -g @anthropic-ai/claude-code
+                  npm install -g @anthropic-ai/cursor-agent
                 </code>
               </div>
 
               <div>
                 <h4 className="font-medium mb-1.5">2. Authenticate</h4>
                 <code className="block rounded-md bg-muted px-3 py-2 text-xs">
-                  claude login
+                  agent login
                 </code>
               </div>
 
               <div>
                 <h4 className="font-medium mb-1.5">3. Verify Installation</h4>
                 <code className="block rounded-md bg-muted px-3 py-2 text-xs">
-                  claude --version
+                  agent --version
                 </code>
               </div>
 
@@ -206,7 +206,7 @@ export function ConnectionStatus() {
                     }}
                     className="w-full"
                   >
-                    Install Claude Code Automatically
+                    Install Cursor Agent Automatically
                   </Button>
                 </div>
               )}

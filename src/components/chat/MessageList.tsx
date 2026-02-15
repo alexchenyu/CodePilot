@@ -85,8 +85,8 @@ export function MessageList({
     return (
       <div className="flex flex-1 items-center justify-center">
         <ConversationEmptyState
-          title="Claude Chat"
-          description="Start a conversation with Claude. Ask questions, get help with code, or explore ideas."
+          title="Cursor Agent"
+          description="Start a conversation with Cursor Agent. Ask questions, get help with code, or explore ideas."
           icon={<CodePilotLogo className="h-16 w-16" />}
         />
       </div>
@@ -95,7 +95,7 @@ export function MessageList({
 
   return (
     <Conversation>
-      <ConversationContent className="mx-auto max-w-3xl px-4 py-6 gap-6">
+      <ConversationContent className="mx-auto max-w-3xl px-2 py-4 gap-4 sm:px-4 sm:py-6 sm:gap-6">
         {hasMore && (
           <div className="flex justify-center">
             <button

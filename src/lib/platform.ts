@@ -18,7 +18,7 @@ function needsShell(binPath: string): boolean {
 }
 
 /**
- * Extra PATH directories to search for Claude CLI and other tools.
+ * Extra PATH directories to search for the agent CLI and other tools.
  */
 export function getExtraPathDirs(): string[] {
   const home = os.homedir();
@@ -29,9 +29,8 @@ export function getExtraPathDirs(): string[] {
       path.join(appData, 'npm'),
       path.join(localAppData, 'npm'),
       path.join(home, '.npm-global', 'bin'),
-      path.join(home, '.claude', 'bin'),
       path.join(home, '.local', 'bin'),
-      path.join(home, '.nvm', 'current', 'bin'),
+      path.join(home, '.cursor', 'bin'),
     ];
   }
   return [
@@ -42,14 +41,14 @@ export function getExtraPathDirs(): string[] {
     path.join(home, '.npm-global', 'bin'),
     path.join(home, '.nvm', 'current', 'bin'),
     path.join(home, '.local', 'bin'),
-    path.join(home, '.claude', 'bin'),
+    path.join(home, '.cursor', 'bin'),
   ];
 }
 
 /**
- * Claude CLI candidate installation paths.
+ * Cursor Agent CLI candidate installation paths.
  */
-export function getClaudeCandidatePaths(): string[] {
+export function getAgentCandidatePaths(): string[] {
   const home = os.homedir();
   if (isWindows) {
     const appData = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
@@ -59,23 +58,23 @@ export function getClaudeCandidatePaths(): string[] {
       path.join(appData, 'npm'),
       path.join(localAppData, 'npm'),
       path.join(home, '.npm-global', 'bin'),
-      path.join(home, '.claude', 'bin'),
       path.join(home, '.local', 'bin'),
+      path.join(home, '.cursor', 'bin'),
     ];
     const candidates: string[] = [];
     for (const dir of baseDirs) {
       for (const ext of exts) {
-        candidates.push(path.join(dir, 'claude' + ext));
+        candidates.push(path.join(dir, 'agent' + ext));
       }
     }
     return candidates;
   }
   return [
-    '/usr/local/bin/claude',
-    '/opt/homebrew/bin/claude',
-    path.join(home, '.npm-global', 'bin', 'claude'),
-    path.join(home, '.local', 'bin', 'claude'),
-    path.join(home, '.claude', 'bin', 'claude'),
+    '/usr/local/bin/agent',
+    '/opt/homebrew/bin/agent',
+    path.join(home, '.npm-global', 'bin', 'agent'),
+    path.join(home, '.local', 'bin', 'agent'),
+    path.join(home, '.cursor', 'bin', 'agent'),
   ];
 }
 
@@ -95,7 +94,7 @@ export function getExpandedPath(): string {
   return parts.join(path.delimiter);
 }
 
-// TTL cache for findClaudeBinary to avoid repeated filesystem probes.
+// TTL cache for findAgentBinary to avoid repeated filesystem probes.
 // Only caches "found" results; "not found" is never cached so a fresh
 // install is detected immediately on the next check.
 let _cachedBinaryPath: string | undefined | null = null; // null = not cached
@@ -103,16 +102,16 @@ let _cachedBinaryTimestamp = 0;
 const BINARY_CACHE_TTL = 60_000; // 60 seconds
 
 /**
- * Find and validate the Claude CLI binary.
+ * Find and validate the Cursor Agent CLI binary.
  * Positive results are cached for 60s; negative results are never cached.
  */
-export function findClaudeBinary(): string | undefined {
+export function findAgentBinary(): string | undefined {
   const now = Date.now();
   if (_cachedBinaryPath !== null && now - _cachedBinaryTimestamp < BINARY_CACHE_TTL) {
     return _cachedBinaryPath;
   }
 
-  const found = _findClaudeBinaryUncached();
+  const found = _findAgentBinaryUncached();
   if (found) {
     _cachedBinaryPath = found;
     _cachedBinaryTimestamp = now;
@@ -123,9 +122,9 @@ export function findClaudeBinary(): string | undefined {
   return found;
 }
 
-function _findClaudeBinaryUncached(): string | undefined {
+function _findAgentBinaryUncached(): string | undefined {
   // Try known candidate paths first
-  for (const p of getClaudeCandidatePaths()) {
+  for (const p of getAgentCandidatePaths()) {
     try {
       execFileSync(p, ['--version'], {
         timeout: 3000,
@@ -141,7 +140,7 @@ function _findClaudeBinaryUncached(): string | undefined {
   // Fallback: use `where` (Windows) or `which` (Unix) with expanded PATH
   try {
     const cmd = isWindows ? 'where' : '/usr/bin/which';
-    const args = isWindows ? ['claude'] : ['claude'];
+    const args = ['agent'];
     const result = execFileSync(cmd, args, {
       timeout: 3000,
       stdio: 'pipe',
@@ -172,21 +171,26 @@ function _findClaudeBinaryUncached(): string | undefined {
 }
 
 /**
- * Execute claude --version and return the version string.
+ * Execute agent --version and return the version string.
  * Handles .cmd shell execution on Windows.
  */
-export async function getClaudeVersion(claudePath: string): Promise<string | null> {
+export async function getAgentVersion(agentPath: string): Promise<string | null> {
   try {
-    const { stdout } = await execFileAsync(claudePath, ['--version'], {
+    const { stdout } = await execFileAsync(agentPath, ['--version'], {
       timeout: 5000,
       env: { ...process.env, PATH: getExpandedPath() },
-      shell: needsShell(claudePath),
+      shell: needsShell(agentPath),
     });
     return stdout.trim() || null;
   } catch {
     return null;
   }
 }
+
+// Legacy aliases for backward compatibility
+export const findClaudeBinary = findAgentBinary;
+export const getClaudeVersion = getAgentVersion;
+export const getClaudeCandidatePaths = getAgentCandidatePaths;
 
 /**
  * Find Git Bash (bash.exe) on Windows.
@@ -221,7 +225,6 @@ export function findGitBash(): string | null {
     for (const line of lines) {
       const gitExe = line.trim();
       if (!gitExe) continue;
-      // git.exe is typically at <GitDir>\cmd\git.exe or <GitDir>\bin\git.exe
       const gitDir = path.dirname(path.dirname(gitExe));
       const bashPath = path.join(gitDir, 'bin', 'bash.exe');
       if (fs.existsSync(bashPath)) {

@@ -34,13 +34,13 @@ const KNOWN_FIELDS = [
   {
     key: "permissions",
     label: "Permissions",
-    description: "Configure permission settings for Claude CLI",
+    description: "Configure permission settings for Cursor Agent CLI",
     type: "object" as const,
   },
   {
     key: "env",
     label: "Environment Variables",
-    description: "Environment variables passed to Claude",
+    description: "Environment variables passed to Cursor Agent",
     type: "object" as const,
   },
 ] as const;
