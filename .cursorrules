@@ -1,0 +1,4 @@
+## Lessons
+
+- `electron:dev` 不能硬编码 `3000`，因为端口经常被占用。开发脚本应支持 `CODEPILOT_DEV_PORT` 并在 `next dev`、`wait-on`、Electron 主进程三处使用同一端口。
+- Linux 开发环境可能触发 Electron SUID sandbox 报错；可在主进程里仅对 `isDev && process.platform === 'linux'` 追加 `app.commandLine.appendSwitch('no-sandbox')`。

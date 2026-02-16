@@ -13,7 +13,7 @@
     "build": "next build && cp -r .next/static .next/standalone/.next/static",
     "start": "node .next/standalone/server.js",
     "lint": "eslint",
-    "electron:dev": "concurrently -k \"next dev\" \"wait-on http://localhost:3000 && electron .\"",
+    "electron:dev": "DEV_PORT=${CODEPILOT_DEV_PORT:-3001}; concurrently -k \"next dev -p $DEV_PORT\" \"wait-on http://localhost:$DEV_PORT && CODEPILOT_DEV_PORT=$DEV_PORT electron .\"",
     "electron:build": "next build && node scripts/build-electron.mjs",
     "electron:pack": "npm run electron:build && electron-builder --config electron-builder.yml",
     "electron:pack:mac": "npm run electron:build && electron-builder --mac --config electron-builder.yml",

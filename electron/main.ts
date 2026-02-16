@@ -39,6 +39,22 @@ let installState: InstallState = {
 let installProcess: ChildProcess | null = null;
 
 const isDev = !app.isPackaged;
+const DEFAULT_DEV_PORT = 3001;
+
+function getDevPort(): number {
+  const raw = process.env.CODEPILOT_DEV_PORT;
+  const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN;
+
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+    return DEFAULT_DEV_PORT;
+  }
+
+  return parsed;
+}
+
+if (isDev && process.platform === 'linux') {
+  app.commandLine.appendSwitch('no-sandbox');
+}
 
 /**
  * Gracefully shut down the server process.
@@ -711,7 +727,7 @@ app.whenReady().then(async () => {
     let port: number;
 
     if (isDev) {
-      port = 3000;
+      port = getDevPort();
       console.log(`Dev mode: connecting to http://127.0.0.1:${port}`);
     } else {
       port = await getPort();
@@ -749,7 +765,7 @@ app.on('activate', async () => {
         await waitForServer(port);
         serverPort = port;
       }
-      createWindow(serverPort || 3000);
+      createWindow(serverPort || (isDev ? getDevPort() : 3000));
     } catch (err) {
       console.error('Failed to restart server:', err);
     }
