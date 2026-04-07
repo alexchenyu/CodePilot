@@ -459,3 +459,70 @@ export function findGitBash(): string | null {
 
   return null;
 }
+
+/**
+ * Find the Cursor Agent CLI binary.
+ * Similar to findClaudeBinary but looks for 'agent' instead of 'claude'.
+ */
+export function findAgentBinary(): string | undefined {
+  // Try which/where with expanded PATH first
+  try {
+    const cmd = isWindows ? 'where' : '/usr/bin/which';
+    const args = isWindows ? ['agent'] : ['agent'];
+    const result = execFileSync(cmd, args, {
+      timeout: 3000,
+      stdio: 'pipe',
+      env: { ...process.env, PATH: getExpandedPath() },
+      shell: isWindows,
+    });
+    // where.exe may return multiple lines; try each with --version validation
+    const lines = result.toString().trim().split(/\r?\n/);
+    for (const line of lines) {
+      const candidate = line.trim();
+      if (!candidate) continue;
+      try {
+        execFileSync(candidate, ['--version'], {
+          timeout: 3000,
+          stdio: 'pipe',
+          shell: needsShell(candidate),
+        });
+        return candidate;
+      } catch {
+        continue;
+      }
+    }
+  } catch {
+    // not found
+  }
+
+  // Fallback: check common installation paths for agent
+  const home = os.homedir();
+  const commonPaths = isWindows ? [
+    path.join(home, '.local', 'bin', 'agent.exe'),
+    path.join(home, '.local', 'bin', 'agent.cmd'),
+    path.join(home, '.local', 'bin', 'agent'),
+    'C:\\Program Files\\Cursor\\agent.exe',
+    'C:\\Program Files (x86)\\Cursor\\agent.exe',
+  ] : [
+    path.join(home, '.local', 'bin', 'agent'),
+    '/usr/local/bin/agent',
+    '/opt/homebrew/bin/agent',
+    '/usr/bin/agent',
+    '/bin/agent',
+  ];
+
+  for (const p of commonPaths) {
+    try {
+      execFileSync(p, ['--version'], {
+        timeout: 3000,
+        stdio: 'pipe',
+        shell: needsShell(p),
+      });
+      return p;
+    } catch {
+      // not found, try next
+    }
+  }
+
+  return undefined;
+}

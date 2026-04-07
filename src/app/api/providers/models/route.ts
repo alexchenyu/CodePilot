@@ -2,14 +2,22 @@ import { NextResponse } from 'next/server';
 import { getAllProviders, getDefaultProviderId, setDefaultProviderId, getProvider, getModelsForProvider, getSetting } from '@/lib/db';
 import { getContextWindow } from '@/lib/model-context';
 import { getDefaultModelsForProvider, inferProtocolFromLegacy, findPresetForLegacy } from '@/lib/provider-catalog';
+import { fetchCliModels } from '@/lib/cli-models';
 import type { Protocol } from '@/lib/provider-catalog';
 import type { ErrorResponse, ProviderModelGroup } from '@/types';
 
-// Default Claude model options (for the built-in 'env' provider)
+// Default model options (for the built-in 'env' provider, via Cursor Agent CLI)
 const DEFAULT_MODELS = [
-  { value: 'sonnet', label: 'Sonnet 4.6' },
-  { value: 'opus', label: 'Opus 4.6' },
-  { value: 'haiku', label: 'Haiku 4.5' },
+  { value: 'sonnet-4.6', label: 'Sonnet 4.6' },
+  { value: 'opus-4.6', label: 'Opus 4.6' },
+  { value: 'haiku-4.5', label: 'Haiku 4.5' },
+  { value: 'gpt-5', label: 'GPT-5' },
+  { value: 'gpt-5-mini', label: 'GPT-5 Mini' },
+  { value: 'gpt-5.4-medium', label: 'GPT-5.4' },
+  { value: 'o3', label: 'o3' },
+  { value: 'o4-mini', label: 'o4 Mini' },
+  { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+  { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
 ];
 
 interface ModelEntry {
@@ -64,7 +72,9 @@ export async function GET() {
       }),
     });
 
-    // If SDK has discovered models, use them for the env group
+    // If SDK has discovered models, use them for the env group.
+    // Otherwise fall back to CLI-based discovery (`agent models`).
+    let envModelsResolved = false;
     try {
       const { getCachedModels } = await import('@/lib/agent-sdk-capabilities');
       const sdkModels = getCachedModels('env');
@@ -81,9 +91,28 @@ export async function GET() {
             ...(cw != null ? { contextWindow: cw } : {}),
           };
         });
+        envModelsResolved = true;
       }
     } catch {
-      // SDK capabilities not available, keep defaults
+      // SDK capabilities not available
+    }
+
+    if (!envModelsResolved) {
+      try {
+        const cliModels = await fetchCliModels();
+        if (cliModels && cliModels.length > 0) {
+          groups[0].models = cliModels.map(m => {
+            const cw = getContextWindow(m.id);
+            return {
+              value: m.id,
+              label: m.label,
+              ...(cw != null ? { contextWindow: cw } : {}),
+            };
+          });
+        }
+      } catch {
+        // CLI discovery failed, keep hardcoded defaults
+      }
     }
 
     // Build a group for each configured provider

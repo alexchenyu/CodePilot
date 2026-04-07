@@ -10,7 +10,7 @@ function verifyToken(token: string): boolean {
   return token === hashPassword(password);
 }
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   if (!isAuthEnabled()) {
     return NextResponse.next();
   }

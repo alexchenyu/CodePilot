@@ -3,6 +3,7 @@
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import Link from "next/link";
+import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "motion/react";
 import {
   MagnifyingGlass,
@@ -449,7 +450,13 @@ export function ChatListPanel({ open, width, hasUpdate, readyToInstall }: ChatLi
 
   return (
     <aside
-      className="hidden h-full shrink-0 flex-col overflow-hidden bg-sidebar/80 backdrop-blur-xl lg:flex"
+      className={cn(
+        "flex h-full shrink-0 flex-col overflow-hidden bg-sidebar/80 backdrop-blur-xl",
+        // Desktop: normal inline flow
+        "lg:relative lg:z-auto lg:w-auto lg:shadow-none",
+        // Mobile: fixed overlay
+        "max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:z-40 max-lg:w-[280px]! max-lg:shadow-xl max-lg:pb-12"
+      )}
       style={{ width: width ?? 240 }}
     >
       {/* Header - extra top padding for macOS traffic lights */}

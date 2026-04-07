@@ -57,9 +57,14 @@ export default function RootLayout({
           <script dangerouslySetInnerHTML={{ __html: `(function(){try{if(!localStorage.getItem('theme')){localStorage.setItem('theme',${JSON.stringify(dbThemeMode)})}}catch(e){}})();` }} />
         )}
         <style id="theme-family-vars" dangerouslySetInnerHTML={{ __html: themeFamilyCSS }} />
+        {/* Remove Next.js dev error overlay (hydration warnings from browser extensions) */}
+        {process.env.NODE_ENV === 'development' && (
+          <script dangerouslySetInnerHTML={{ __html: `(function(){var o=new MutationObserver(function(m){m.forEach(function(r){r.addedNodes.forEach(function(n){if(n.tagName&&n.tagName.toLowerCase()==='nextjs-portal'){n.remove()}})})});o.observe(document.documentElement,{childList:true,subtree:true})})();` }} />
+        )}
       </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+        suppressHydrationWarning
       >
         <ThemeProvider>
           <ThemeFamilyProvider families={familiesMeta}>

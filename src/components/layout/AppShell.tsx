@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { TooltipProvider } from "@/components/ui/tooltip";
 // NavRail removed — navigation merged into ChatListPanel
 import { ChatListPanel } from "./ChatListPanel";
+import { MobileNav } from "./MobileNav";
 import { ResizeHandle } from "./ResizeHandle";
 import { UpdateDialog } from "./UpdateDialog";
 import { UpdateBanner } from "./UpdateBanner";
@@ -430,33 +431,50 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <ImageGenContext.Provider value={imageGenValue}>
         <BatchImageGenContext.Provider value={batchImageGenValue}>
         <TooltipProvider delayDuration={300}>
-          <div className="flex h-screen overflow-hidden">
-            <ErrorBoundary>
-              <ChatListPanel
-                open={chatListOpen}
-                width={chatListWidth}
-                hasUpdate={updateContextValue.updateInfo?.updateAvailable ?? false}
-                readyToInstall={updateContextValue.updateInfo?.readyToInstall ?? false}
-              />
-            </ErrorBoundary>
-            {chatListOpen && (
-              <ResizeHandle side="left" onResize={handleChatListResize} onResizeEnd={handleChatListResizeEnd} />
-            )}
-            <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-              <UnifiedTopBar />
-              <UpdateBanner />
-              <div className="flex flex-1 min-h-0 overflow-hidden">
-                <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-                  <main className="relative flex-1 overflow-hidden">
-                    {isSplitActive ? (
-                      <SplitChatContainer />
-                    ) : (
-                      <ErrorBoundary>{children}</ErrorBoundary>
-                    )}
-                  </main>
+          <div className="flex h-screen flex-col overflow-hidden">
+            <div className="flex min-h-0 flex-1 overflow-hidden">
+              {/* Mobile backdrop */}
+              {chatListOpen && (
+                <div
+                  className="fixed inset-0 z-30 bg-black/40 lg:hidden"
+                  onClick={() => setChatListOpen(false)}
+                />
+              )}
+              <ErrorBoundary>
+                <ChatListPanel
+                  open={chatListOpen}
+                  width={chatListWidth}
+                  hasUpdate={updateContextValue.updateInfo?.updateAvailable ?? false}
+                  readyToInstall={updateContextValue.updateInfo?.readyToInstall ?? false}
+                />
+              </ErrorBoundary>
+              {chatListOpen && (
+                <ResizeHandle side="left" onResize={handleChatListResize} onResizeEnd={handleChatListResizeEnd} />
+              )}
+              <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+                <UnifiedTopBar />
+                <UpdateBanner />
+                <div className="flex flex-1 min-h-0 overflow-hidden">
+                  <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+                    <main className="relative flex-1 overflow-hidden">
+                      {isSplitActive ? (
+                        <SplitChatContainer />
+                      ) : (
+                        <ErrorBoundary>{children}</ErrorBoundary>
+                      )}
+                    </main>
+                  </div>
+                  {isChatDetailRoute && <PanelZone />}
                 </div>
-                {isChatDetailRoute && <PanelZone />}
               </div>
+            </div>
+            {/* Mobile bottom navigation */}
+            <div className="lg:hidden">
+              <MobileNav
+                chatListOpen={chatListOpen}
+                onToggleChatList={() => setChatListOpen(!chatListOpen)}
+                skipPermissionsActive={skipPermissionsActive}
+              />
             </div>
           </div>
           <UpdateDialog />
