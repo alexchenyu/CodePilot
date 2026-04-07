@@ -1,14 +1,12 @@
 'use client';
 
-import { useEffect, useState, useRef, useCallback, use } from 'react';
+import { useEffect, useState, useRef, use } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import type { Message, MessagesResponse, ChatSession } from '@/types';
 import { ChatView } from '@/components/chat/ChatView';
-import { HugeiconsIcon } from "@hugeicons/react";
-import { Loading02Icon, PencilEdit01Icon, ArrowLeft01Icon } from "@hugeicons/core-free-icons";
-import { Input } from '@/components/ui/input';
+import { SpinnerGap } from "@/components/ui/icon";
 import { usePanel } from '@/hooks/usePanel';
+import { useTranslation } from '@/hooks/useTranslation';
 
 interface ChatSessionPageProps {
   params: Promise<{ id: string }>;
@@ -16,93 +14,70 @@ interface ChatSessionPageProps {
 
 export default function ChatSessionPage({ params }: ChatSessionPageProps) {
   const { id } = use(params);
-  const router = useRouter();
   const [messages, setMessages] = useState<Message[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [sessionTitle, setSessionTitle] = useState<string>('');
   const [sessionModel, setSessionModel] = useState<string>('');
-  const [sessionMode, setSessionMode] = useState<string>('');
-  const [projectName, setProjectName] = useState<string>('');
-  const [isEditingTitle, setIsEditingTitle] = useState(false);
-  const [editTitle, setEditTitle] = useState('');
-  const titleInputRef = useRef<HTMLInputElement>(null);
-  const { setWorkingDirectory, setSessionId, setSessionTitle: setPanelSessionTitle, setPanelOpen } = usePanel();
-
-  const handleStartEditTitle = useCallback(() => {
-    setEditTitle(sessionTitle || 'New Conversation');
-    setIsEditingTitle(true);
-  }, [sessionTitle]);
-
-  const handleSaveTitle = useCallback(async () => {
-    const trimmed = editTitle.trim();
-    if (!trimmed) {
-      setIsEditingTitle(false);
-      return;
-    }
-    try {
-      const res = await fetch(`/api/chat/sessions/${id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: trimmed }),
-      });
-      if (res.ok) {
-        setSessionTitle(trimmed);
-        setPanelSessionTitle(trimmed);
-        window.dispatchEvent(new CustomEvent('session-updated', { detail: { id, title: trimmed } }));
-      }
-    } catch {
-      // silently fail
-    }
-    setIsEditingTitle(false);
-  }, [editTitle, id, setPanelSessionTitle]);
-
-  const handleTitleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      handleSaveTitle();
-    } else if (e.key === 'Escape') {
-      setIsEditingTitle(false);
-    }
-  }, [handleSaveTitle]);
-
-  useEffect(() => {
-    if (isEditingTitle && titleInputRef.current) {
-      titleInputRef.current.focus();
-      titleInputRef.current.select();
-    }
-  }, [isEditingTitle]);
+  const [sessionProviderId, setSessionProviderId] = useState<string>('');
+  const [sessionInfoLoaded, setSessionInfoLoaded] = useState(false);
+  const [sessionPermissionProfile, setSessionPermissionProfile] = useState<'default' | 'full_access'>('default');
+  const [sessionMode, setSessionMode] = useState<'code' | 'plan'>('code');
+  const [sessionHasSummary, setSessionHasSummary] = useState(false);
+  const { setWorkingDirectory, setSessionId, setSessionTitle: setPanelSessionTitle, setFileTreeOpen, setGitPanelOpen, setDashboardPanelOpen } = usePanel();
+  const { t } = useTranslation();
+  const defaultPanelAppliedRef = useRef(false);
 
   // Load session info and set working directory
   useEffect(() => {
+    let cancelled = false;
+    // Clear stale state immediately so ChatView doesn't inherit previous session's values
+    setWorkingDirectory('');
+    setSessionModel('');
+    setSessionProviderId('');
+    setSessionInfoLoaded(false);
+
     async function loadSession() {
       try {
-        const res = await fetch(`/api/chat/sessions/${id}`);
-        if (res.ok) {
-          const data: { session: ChatSession } = await res.json();
+        const sessionRes = await fetch(`/api/chat/sessions/${id}`);
+        if (cancelled) return;
+        if (sessionRes.ok) {
+          const data: { session: ChatSession } = await sessionRes.json();
+          if (cancelled) return;
           if (data.session.working_directory) {
             setWorkingDirectory(data.session.working_directory);
             localStorage.setItem("codepilot:last-working-directory", data.session.working_directory);
+            window.dispatchEvent(new Event('refresh-file-tree'));
           }
           setSessionId(id);
-          setPanelOpen(true);
-          const title = data.session.title || 'New Conversation';
-          setSessionTitle(title);
+          const title = data.session.title || t('chat.newConversation');
           setPanelSessionTitle(title);
-          setSessionModel(data.session.model || '');
-          setSessionMode(data.session.mode || 'code');
-          setProjectName(data.session.project_name || '');
+
+          // Resolve model: session → global default → provider's first → localStorage → 'sonnet'
+          const { resolveSessionModel } = await import('@/lib/resolve-session-model');
+          if (cancelled) return;
+          const resolved = await resolveSessionModel(data.session.model || '', data.session.provider_id || '');
+          if (cancelled) return;
+          setSessionModel(resolved.model);
+          setSessionProviderId(resolved.providerId);
+          setSessionPermissionProfile(data.session.permission_profile || 'default');
+          setSessionMode((data.session.mode as 'code' | 'plan') || 'code');
+          setSessionHasSummary(!!data.session.context_summary);
         }
       } catch {
         // Session info load failed - panel will still work without directory
+      } finally {
+        if (!cancelled) setSessionInfoLoaded(true);
       }
     }
 
     loadSession();
-  }, [id, setWorkingDirectory, setSessionId, setPanelSessionTitle, setPanelOpen]);
+    return () => { cancelled = true; };
+  }, [id, setWorkingDirectory, setSessionId, setPanelSessionTitle, t]);
 
   useEffect(() => {
     // Reset state when switching sessions
+    defaultPanelAppliedRef.current = false;
     setLoading(true);
     setError(null);
     setMessages([]);
@@ -112,7 +87,7 @@ export default function ChatSessionPage({ params }: ChatSessionPageProps) {
 
     async function loadMessages() {
       try {
-        const res = await fetch(`/api/chat/sessions/${id}/messages?limit=100`);
+        const res = await fetch(`/api/chat/sessions/${id}/messages?limit=30`);
         if (cancelled) return;
         if (!res.ok) {
           if (res.status === 404) {
@@ -138,10 +113,45 @@ export default function ChatSessionPage({ params }: ChatSessionPageProps) {
     return () => { cancelled = true; };
   }, [id]);
 
-  if (loading) {
+  // Auto-open default panel the first time a session is ever opened.
+  // Uses sessionStorage to track which sessions have already been initialized,
+  // so re-opening an untouched (zero-message) session won't override the layout.
+  useEffect(() => {
+    if (defaultPanelAppliedRef.current) return;
+    defaultPanelAppliedRef.current = true;
+
+    const storageKey = `codepilot:panel-init:${id}`;
+    if (typeof window !== 'undefined' && sessionStorage.getItem(storageKey)) return;
+
+    if (typeof window !== 'undefined') {
+      sessionStorage.setItem(storageKey, '1');
+    }
+
+    (async () => {
+      try {
+        const res = await fetch('/api/settings/app');
+        if (!res.ok) return;
+        const data = await res.json();
+        const panel = data.settings?.default_panel || 'file_tree';
+        if (panel === 'none') {
+          setFileTreeOpen(false);
+          setGitPanelOpen(false);
+          setDashboardPanelOpen(false);
+        } else {
+          setFileTreeOpen(panel === 'file_tree');
+          setGitPanelOpen(panel === 'git');
+          setDashboardPanelOpen(panel === 'dashboard');
+        }
+      } catch {
+        setFileTreeOpen(true);
+      }
+    })();
+  }, [id, setFileTreeOpen, setGitPanelOpen, setDashboardPanelOpen]);
+
+  if (loading || !sessionInfoLoaded) {
     return (
       <div className="flex h-full items-center justify-center">
-        <HugeiconsIcon icon={Loading02Icon} className="h-8 w-8 animate-spin text-muted-foreground" />
+        <SpinnerGap size={32} className="animate-spin text-muted-foreground" />
       </div>
     );
   }
@@ -161,57 +171,7 @@ export default function ChatSessionPage({ params }: ChatSessionPageProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {/* Chat title bar */}
-      {sessionTitle && (
-        <div
-          className="flex items-center px-2 pb-2 pt-1 gap-1 sm:justify-center sm:px-4"
-          style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
-        >
-          {/* Mobile back button */}
-          <button
-            className="sm:hidden shrink-0 p-1.5 -ml-0.5 rounded-md hover:bg-muted transition-colors"
-            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-            onClick={() => router.push('/chat')}
-          >
-            <HugeiconsIcon icon={ArrowLeft01Icon} className="h-4 w-4 text-muted-foreground" />
-          </button>
-
-          {projectName && (
-            <>
-              <span className="text-xs text-muted-foreground shrink-0 hidden sm:inline">{projectName}</span>
-              <span className="text-xs text-muted-foreground shrink-0 hidden sm:inline">/</span>
-            </>
-          )}
-          {isEditingTitle ? (
-            <div className="flex-1 sm:flex-initial" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-              <Input
-                ref={titleInputRef}
-                value={editTitle}
-                onChange={(e) => setEditTitle(e.target.value)}
-                onKeyDown={handleTitleKeyDown}
-                onBlur={handleSaveTitle}
-                className="h-7 text-sm max-w-md text-center"
-              />
-            </div>
-          ) : (
-            <div
-              className="flex items-center gap-1 group cursor-default min-w-0 flex-1 sm:flex-initial sm:max-w-md"
-              style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-            >
-              <h2 className="text-sm font-medium text-foreground/80 truncate">
-                {sessionTitle}
-              </h2>
-              <button
-                onClick={handleStartEditTitle}
-                className="opacity-0 group-hover:opacity-100 sm:transition-opacity shrink-0 p-0.5 rounded hover:bg-muted max-sm:hidden"
-              >
-                <HugeiconsIcon icon={PencilEdit01Icon} className="h-3 w-3 text-muted-foreground" />
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-      <ChatView key={id} sessionId={id} initialMessages={messages} initialHasMore={hasMore} modelName={sessionModel} initialMode={sessionMode} />
+      <ChatView key={id} sessionId={id} initialMessages={messages} initialHasMore={hasMore} modelName={sessionModel} providerId={sessionProviderId} initialPermissionProfile={sessionPermissionProfile} initialMode={sessionMode} initialHasSummary={sessionHasSummary} />
     </div>
   );
 }

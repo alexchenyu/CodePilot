@@ -1,29 +1,19 @@
-/**
- * Permission registry for Cursor Agent.
- *
- * Note: In the Cursor Agent CLI `--print` mode, permission handling is managed
- * by the agent process itself (default permission mode). This registry is kept
- * as a minimal stub for API compatibility with the permission route, but the
- * actual permission flow is handled by the agent CLI internally.
- */
-
-export interface PermissionResult {
-  behavior: 'allow' | 'deny';
-  updatedInput?: Record<string, unknown>;
-  updatedPermissions?: unknown[];
-  message?: string;
-}
+import type { PermissionResult } from '@anthropic-ai/claude-agent-sdk';
+import { resolvePermissionRequest as dbResolvePermission } from './db';
 
 interface PendingPermission {
   resolve: (result: PermissionResult) => void;
   createdAt: number;
   abortSignal?: AbortSignal;
   toolInput: Record<string, unknown>;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 const TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
 // Use globalThis to ensure the Map is shared across all module instances.
+// In Next.js dev mode (Turbopack), different API routes may load separate
+// module instances, so a module-level variable would NOT be shared.
 const globalKey = '__pendingPermissions__' as const;
 
 function getMap(): Map<string, PendingPermission> {
@@ -34,48 +24,60 @@ function getMap(): Map<string, PendingPermission> {
 }
 
 /**
- * Lazily clean up expired entries (older than TIMEOUT_MS).
+ * Helper to deny and remove a pending permission entry.
+ * Also writes the denial to DB for persistence/audit.
  */
-function cleanupExpired() {
+function denyAndRemove(id: string, message: string, dbStatus: 'timeout' | 'aborted' = 'aborted') {
   const map = getMap();
-  const now = Date.now();
-  for (const [id, entry] of map) {
-    if (now - entry.createdAt > TIMEOUT_MS) {
-      entry.resolve({ behavior: 'deny', message: 'Permission request timed out' });
-      map.delete(id);
-    }
+  const entry = map.get(id);
+  if (!entry) return;
+  clearTimeout(entry.timer);
+  entry.resolve({ behavior: 'deny', message });
+  map.delete(id);
+  try {
+    dbResolvePermission(id, dbStatus, { message });
+  } catch {
+    // DB write failure should not affect in-memory path
   }
 }
 
 /**
  * Register a pending permission request.
- * Returns a Promise that resolves when the user responds.
+ * Returns a Promise that resolves when the user responds or after TIMEOUT_MS.
  */
 export function registerPendingPermission(
   id: string,
   toolInput: Record<string, unknown>,
   abortSignal?: AbortSignal,
 ): Promise<PermissionResult> {
-  cleanupExpired();
-
   const map = getMap();
 
   return new Promise<PermissionResult>((resolve) => {
+    // Per-request independent timer: auto-deny after TIMEOUT_MS
+    const timer = setTimeout(() => {
+      if (map.has(id)) {
+        console.warn(`[permission-registry] Permission request ${id} timed out after ${TIMEOUT_MS / 1000}s`);
+        resolve({ behavior: 'deny', message: 'Permission request timed out' });
+        map.delete(id);
+        try {
+          dbResolvePermission(id, 'timeout', { message: 'Permission request timed out' });
+        } catch {
+          // DB write failure should not affect in-memory path
+        }
+      }
+    }, TIMEOUT_MS);
+
     map.set(id, {
       resolve,
       createdAt: Date.now(),
       abortSignal,
       toolInput,
+      timer,
     });
 
+    // Auto-deny if the abort signal fires (client disconnect / stop button)
     if (abortSignal) {
-      const onAbort = () => {
-        if (map.has(id)) {
-          resolve({ behavior: 'deny', message: 'Request aborted' });
-          map.delete(id);
-        }
-      };
-      abortSignal.addEventListener('abort', onAbort, { once: true });
+      abortSignal.addEventListener('abort', () => denyAndRemove(id, 'Request aborted'), { once: true });
     }
   });
 }
@@ -92,8 +94,22 @@ export function resolvePendingPermission(
   const entry = map.get(id);
   if (!entry) return false;
 
+  clearTimeout(entry.timer);
+
   if (result.behavior === 'allow' && !result.updatedInput) {
     result = { ...result, updatedInput: entry.toolInput };
+  }
+
+  // Dual-write: persist to DB before resolving in-memory
+  try {
+    const dbStatus = result.behavior === 'allow' ? 'allow' as const : 'deny' as const;
+    dbResolvePermission(id, dbStatus, {
+      updatedPermissions: result.behavior === 'allow' ? (result.updatedPermissions as unknown[]) : undefined,
+      updatedInput: result.behavior === 'allow' ? (result.updatedInput as Record<string, unknown>) : undefined,
+      message: result.behavior === 'deny' ? result.message : undefined,
+    });
+  } catch {
+    // DB write failure should not affect in-memory path
   }
 
   entry.resolve(result);

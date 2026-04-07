@@ -7,10 +7,29 @@ export type PanelContent = "files" | "tasks";
 export type PreviewViewMode = "source" | "rendered";
 
 export interface PanelContextValue {
-  panelOpen: boolean;
-  setPanelOpen: (open: boolean) => void;
-  panelContent: PanelContent;
-  setPanelContent: (content: PanelContent) => void;
+  // --- New independent panel states ---
+  fileTreeOpen: boolean;
+  setFileTreeOpen: (open: boolean) => void;
+  gitPanelOpen: boolean;
+  setGitPanelOpen: (open: boolean) => void;
+  previewOpen: boolean;
+  setPreviewOpen: (open: boolean) => void;
+  terminalOpen: boolean;
+  setTerminalOpen: (open: boolean) => void;
+  dashboardPanelOpen: boolean;
+  setDashboardPanelOpen: (open: boolean) => void;
+  assistantPanelOpen: boolean;
+  setAssistantPanelOpen: (open: boolean) => void;
+  isAssistantWorkspace: boolean;
+  setIsAssistantWorkspace: (is: boolean) => void;
+
+  // --- Git summary (for top bar, derived — no setters) ---
+  currentBranch: string;
+  gitDirtyCount: number;
+  currentWorktreeLabel: string;
+  setCurrentWorktreeLabel: (label: string) => void;
+
+  // --- Preserved from old API ---
   workingDirectory: string;
   setWorkingDirectory: (dir: string) => void;
   sessionId: string;
@@ -21,6 +40,10 @@ export interface PanelContextValue {
   setStreamingSessionId: (id: string) => void;
   pendingApprovalSessionId: string;
   setPendingApprovalSessionId: (id: string) => void;
+  /** All sessions with active streams (supports multi-session streaming) */
+  activeStreamingSessions: Set<string>;
+  /** All sessions with pending permission approval */
+  pendingApprovalSessionIds: Set<string>;
   previewFile: string | null;
   setPreviewFile: (path: string | null) => void;
   previewViewMode: PreviewViewMode;

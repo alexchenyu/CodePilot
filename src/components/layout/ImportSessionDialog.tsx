@@ -13,17 +13,17 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
 import { Badge } from "@/components/ui/badge";
-import { HugeiconsIcon } from "@hugeicons/react";
 import {
-  Search01Icon,
-  Loading02Icon,
-  FolderOpenIcon,
-  GitBranchIcon,
-  ClockIcon,
-  FileImportIcon,
-  MessageAddIcon,
-} from "@hugeicons/core-free-icons";
-import { cn } from "@/lib/utils";
+  MagnifyingGlass,
+  SpinnerGap,
+  FolderOpen,
+  GitBranch,
+  Clock,
+  FileArrowDown,
+  ChatCircleText,
+} from "@/components/ui/icon";
+import { useTranslation } from "@/hooks/useTranslation";
+import { cn, parseDBDate } from "@/lib/utils";
 
 interface ClaudeSessionInfo {
   sessionId: string;
@@ -45,18 +45,18 @@ interface ImportSessionDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
-function formatRelativeTime(dateStr: string): string {
-  const date = new Date(dateStr);
+function formatRelativeTime(dateStr: string): { key: 'import.justNow' | 'import.minutesAgo' | 'import.hoursAgo' | 'import.daysAgo'; params?: Record<string, number> } | string {
+  const date = parseDBDate(dateStr);
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
   const diffMin = Math.floor(diffMs / 60000);
   const diffHr = Math.floor(diffMin / 60);
   const diffDay = Math.floor(diffHr / 24);
 
-  if (diffMin < 1) return "just now";
-  if (diffMin < 60) return `${diffMin}m ago`;
-  if (diffHr < 24) return `${diffHr}h ago`;
-  if (diffDay < 7) return `${diffDay}d ago`;
+  if (diffMin < 1) return { key: 'import.justNow' };
+  if (diffMin < 60) return { key: 'import.minutesAgo', params: { n: diffMin } };
+  if (diffHr < 24) return { key: 'import.hoursAgo', params: { n: diffHr } };
+  if (diffDay < 7) return { key: 'import.daysAgo', params: { n: diffDay } };
   return date.toLocaleDateString();
 }
 
@@ -71,6 +71,7 @@ export function ImportSessionDialog({
   onOpenChange,
 }: ImportSessionDialogProps) {
   const router = useRouter();
+  const { t } = useTranslation();
   const [sessions, setSessions] = useState<ClaudeSessionInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState<string | null>(null);
@@ -150,26 +151,23 @@ export function ImportSessionDialog({
       <DialogContent className="sm:max-w-2xl max-h-[80vh] !flex flex-col overflow-hidden">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <HugeiconsIcon
-              icon={FileImportIcon}
-              className="h-5 w-5 text-primary"
-            />
-            Import CLI Session
+            <FileArrowDown size={20} className="text-primary" />
+            {t('import.title')}
           </DialogTitle>
           <DialogDescription>
-            Browse and import conversations from Cursor Agent CLI. Imported
+            Browse and import conversations from Claude Code CLI. Imported
             sessions can be resumed in CodePilot.
           </DialogDescription>
         </DialogHeader>
 
         {/* Search */}
         <div className="relative">
-          <HugeiconsIcon
-            icon={Search01Icon}
-            className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
+          <MagnifyingGlass
+            size={14}
+            className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground"
           />
           <Input
-            placeholder="Search by project, message, or branch..."
+            placeholder={t('import.searchSessions')}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="pl-8 text-sm"
@@ -188,24 +186,18 @@ export function ImportSessionDialog({
           <div className="flex flex-col gap-2 pb-2">
             {loading ? (
               <div className="flex items-center justify-center py-12">
-                <HugeiconsIcon
-                  icon={Loading02Icon}
-                  className="h-5 w-5 animate-spin text-muted-foreground"
-                />
+                <SpinnerGap size={20} className="animate-spin text-muted-foreground" />
                 <span className="ml-2 text-sm text-muted-foreground">
                   Scanning CLI sessions...
                 </span>
               </div>
             ) : filteredSessions.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
-                <HugeiconsIcon
-                  icon={FolderOpenIcon}
-                  className="h-8 w-8 mb-2 opacity-40"
-                />
+                <FolderOpen size={32} className="mb-2 opacity-40" />
                 <p className="text-sm">
                   {searchQuery
-                    ? "No matching sessions"
-                    : "No Cursor Agent CLI sessions found"}
+                    ? t('import.noSessions')
+                    : t('import.noSessions')}
                 </p>
                 <p className="text-xs mt-1 opacity-60">
                   {searchQuery
@@ -239,10 +231,7 @@ export function ImportSessionDialog({
                               variant="secondary"
                               className="text-[10px] px-1.5 py-0 h-4 shrink-0"
                             >
-                              <HugeiconsIcon
-                                icon={GitBranchIcon}
-                                className="h-2.5 w-2.5 mr-0.5"
-                              />
+                              <GitBranch size={10} className="mr-0.5" />
                               {session.gitBranch}
                             </Badge>
                           )}
@@ -260,19 +249,13 @@ export function ImportSessionDialog({
                       >
                         {isImporting ? (
                           <>
-                            <HugeiconsIcon
-                              icon={Loading02Icon}
-                              className="h-3 w-3 mr-1 animate-spin"
-                            />
-                            Importing...
+                            <SpinnerGap size={12} className="mr-1 animate-spin" />
+                            {t('import.importing')}
                           </>
                         ) : (
                           <>
-                            <HugeiconsIcon
-                              icon={FileImportIcon}
-                              className="h-3 w-3 mr-1"
-                            />
-                            Import
+                            <FileArrowDown size={12} className="mr-1" />
+                            {t('import.import')}
                           </>
                         )}
                       </Button>
@@ -284,25 +267,19 @@ export function ImportSessionDialog({
                         className="flex items-center gap-0.5 truncate"
                         title={session.cwd}
                       >
-                        <HugeiconsIcon
-                          icon={FolderOpenIcon}
-                          className="h-2.5 w-2.5 shrink-0"
-                        />
+                        <FolderOpen size={10} className="shrink-0" />
                         {session.cwd}
                       </span>
                       <span className="flex items-center gap-0.5 shrink-0">
-                        <HugeiconsIcon
-                          icon={MessageAddIcon}
-                          className="h-2.5 w-2.5"
-                        />
-                        {totalMessages} msg{totalMessages !== 1 ? "s" : ""}
+                        <ChatCircleText size={10} />
+                        {t(totalMessages !== 1 ? 'import.messagesPlural' : 'import.messages', { n: totalMessages })}
                       </span>
                       <span className="flex items-center gap-0.5 shrink-0">
-                        <HugeiconsIcon
-                          icon={ClockIcon}
-                          className="h-2.5 w-2.5"
-                        />
-                        {formatRelativeTime(session.updatedAt)}
+                        <Clock size={10} />
+                        {(() => {
+                          const rel = formatRelativeTime(session.updatedAt);
+                          return typeof rel === 'string' ? rel : t(rel.key, rel.params);
+                        })()}
                       </span>
                       <span className="shrink-0">
                         {formatFileSize(session.fileSize)}

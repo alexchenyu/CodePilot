@@ -12,8 +12,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { HugeiconsIcon } from "@hugeicons/react";
-import { Loading02Icon, GlobeIcon, FolderOpenIcon } from "@hugeicons/core-free-icons";
+import { SpinnerGap, Globe, FolderOpen } from "@/components/ui/icon";
+import { useTranslation } from "@/hooks/useTranslation";
 import { cn } from "@/lib/utils";
 
 interface CreateSkillDialogProps {
@@ -58,6 +58,7 @@ export function CreateSkillDialog({
   onOpenChange,
   onCreate,
 }: CreateSkillDialogProps) {
+  const { t } = useTranslation();
   const [name, setName] = useState("");
   const [scope, setScope] = useState<"global" | "project">("project");
   const [templateIdx, setTemplateIdx] = useState(0);
@@ -67,11 +68,11 @@ export function CreateSkillDialog({
   const handleCreate = async () => {
     const trimmed = name.trim();
     if (!trimmed) {
-      setError("Name is required");
+      setError(t('skills.nameRequired'));
       return;
     }
     if (!/^[a-zA-Z0-9_-]+$/.test(trimmed)) {
-      setError("Name can only contain letters, numbers, hyphens, and underscores");
+      setError(t('skills.nameInvalid'));
       return;
     }
 
@@ -95,7 +96,7 @@ export function CreateSkillDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Create New Skill</DialogTitle>
+          <DialogTitle>{t('skills.createSkill')}</DialogTitle>
           <DialogDescription>
             Create a new slash command skill. It will be saved as a .md file.
           </DialogDescription>
@@ -104,7 +105,7 @@ export function CreateSkillDialog({
         <div className="space-y-4 py-2">
           {/* Name input */}
           <div className="space-y-2">
-            <Label htmlFor="skill-name">Name</Label>
+            <Label htmlFor="skill-name">{t('skills.skillName')}</Label>
             <div className="flex items-center gap-1">
               <span className="text-sm text-muted-foreground">/</span>
               <Input
@@ -124,34 +125,34 @@ export function CreateSkillDialog({
 
           {/* Scope selection */}
           <div className="space-y-2">
-            <Label>Scope</Label>
+            <Label>{t('skills.scope')}</Label>
             <div className="flex gap-2">
-              <button
-                type="button"
+              <Button
+                variant="outline"
                 onClick={() => setScope("project")}
                 className={cn(
-                  "flex-1 flex items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors",
+                  "flex-1 justify-start",
                   scope === "project"
-                    ? "border-blue-500/50 bg-blue-500/10 text-blue-600 dark:text-blue-400"
+                    ? "border-primary/50 bg-primary/10 text-primary"
                     : "border-border hover:bg-accent"
                 )}
               >
-                <HugeiconsIcon icon={FolderOpenIcon} className="h-4 w-4" />
-                Project
-              </button>
-              <button
-                type="button"
+                <FolderOpen size={16} />
+                {t('skills.project')}
+              </Button>
+              <Button
+                variant="outline"
                 onClick={() => setScope("global")}
                 className={cn(
-                  "flex-1 flex items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors",
+                  "flex-1 justify-start",
                   scope === "global"
-                    ? "border-green-500/50 bg-green-500/10 text-green-600 dark:text-green-400"
+                    ? "border-status-success-border bg-status-success-muted text-status-success-foreground"
                     : "border-border hover:bg-accent"
                 )}
               >
-                <HugeiconsIcon icon={GlobeIcon} className="h-4 w-4" />
-                Global
-              </button>
+                <Globe size={16} />
+                {t('skills.global')}
+              </Button>
             </div>
             <p className="text-xs text-muted-foreground">
               {scope === "project"
@@ -162,22 +163,22 @@ export function CreateSkillDialog({
 
           {/* Template selection */}
           <div className="space-y-2">
-            <Label>Template</Label>
+            <Label>{t('skills.template')}</Label>
             <div className="flex gap-2 flex-wrap">
-              {TEMPLATES.map((t, i) => (
-                <button
-                  key={t.label}
-                  type="button"
+              {TEMPLATES.map((tpl, i) => (
+                <Button
+                  key={tpl.label}
+                  variant="outline"
+                  size="xs"
                   onClick={() => setTemplateIdx(i)}
                   className={cn(
-                    "rounded-md border px-3 py-1 text-xs transition-colors",
                     templateIdx === i
                       ? "border-primary bg-primary/10 text-primary"
                       : "border-border hover:bg-accent"
                   )}
                 >
-                  {t.label}
-                </button>
+                  {tpl.label}
+                </Button>
               ))}
             </div>
           </div>
@@ -191,11 +192,11 @@ export function CreateSkillDialog({
             onClick={() => onOpenChange(false)}
             disabled={creating}
           >
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button onClick={handleCreate} disabled={creating} className="gap-2">
-            {creating && <HugeiconsIcon icon={Loading02Icon} className="h-4 w-4 animate-spin" />}
-            Create Skill
+            {creating && <SpinnerGap size={16} className="animate-spin" />}
+            {t('skills.createSkill')}
           </Button>
         </DialogFooter>
       </DialogContent>

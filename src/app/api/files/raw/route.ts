@@ -1,9 +1,16 @@
 import { NextRequest } from 'next/server';
 import fs from 'fs/promises';
+import { createReadStream } from 'fs';
 import path from 'path';
+import os from 'os';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+function isPathSafe(base: string, target: string): boolean {
+  const normalizedBase = base.endsWith(path.sep) ? base : base + path.sep;
+  return target === base || target.startsWith(normalizedBase);
+}
 
 const MIME_TYPES: Record<string, string> = {
   '.png': 'image/png',
@@ -79,8 +86,8 @@ const MIME_TYPES: Record<string, string> = {
 };
 
 /**
- * Serve raw file content from the user's home directory.
- * Security: only allows reading files within the user's home directory.
+ * Serve raw file content.
+ * Security: restricts to user's home directory to prevent arbitrary file reads.
  */
 export async function GET(request: NextRequest) {
   const filePath = request.nextUrl.searchParams.get('path');
@@ -93,6 +100,15 @@ export async function GET(request: NextRequest) {
   }
 
   const resolved = path.resolve(filePath);
+  const homeDir = os.homedir();
+
+  // Only allow reading files within the user's home directory
+  if (!isPathSafe(homeDir, resolved)) {
+    return new Response(JSON.stringify({ error: 'File is outside the allowed scope' }), {
+      status: 403,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
 
   try {
     await fs.access(resolved);
@@ -111,9 +127,37 @@ export async function GET(request: NextRequest) {
     });
   }
 
-  const buffer = await fs.readFile(resolved);
   const ext = path.extname(resolved).toLowerCase();
   const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+
+  // Stream large files (>10 MB) to avoid buffering into memory
+  const MAX_BUFFERED_SIZE = 10 * 1024 * 1024;
+
+  if (stat.size > MAX_BUFFERED_SIZE) {
+    const nodeStream = createReadStream(resolved);
+    const webStream = new ReadableStream({
+      start(controller) {
+        nodeStream.on('data', (chunk: Buffer | string) => {
+          controller.enqueue(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+        });
+        nodeStream.on('end', () => controller.close());
+        nodeStream.on('error', (err) => controller.error(err));
+      },
+      cancel() {
+        nodeStream.destroy();
+      },
+    });
+
+    return new Response(webStream, {
+      headers: {
+        'Content-Type': contentType,
+        'Content-Length': String(stat.size),
+        'Content-Disposition': `inline; filename="${path.basename(resolved)}"`,
+      },
+    });
+  }
+
+  const buffer = await fs.readFile(resolved);
 
   return new Response(buffer, {
     headers: {

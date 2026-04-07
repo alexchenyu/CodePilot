@@ -118,4 +118,9 @@ module.exports = async function afterPack(context) {
       }
     }
   }
+
+  // Note: Ad-hoc code signing moved to scripts/after-sign.js (afterSign hook).
+  // afterSign runs after electron-builder's own signing step (which is a no-op
+  // with CSC_IDENTITY_AUTO_DISCOVERY=false), ensuring the signature is the last
+  // modification before DMG/ZIP creation.
 };

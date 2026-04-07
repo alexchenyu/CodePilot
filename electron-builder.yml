@@ -1,5 +1,9 @@
 appId: com.codepilot.app
 productName: CodePilot
+publish:
+  provider: github
+  owner: op7418
+  repo: CodePilot
 directories:
   output: release
 files:
@@ -32,10 +36,14 @@ extraResources:
   - from: public/
     to: standalone/public/
     filter: ["**/*"]
+  - from: themes/
+    to: standalone/themes/
+    filter: ["*.json"]
   - from: build/
     to: .
     filter: ["icon.*"]
 afterPack: scripts/after-pack.js
+afterSign: scripts/after-sign.js
 asarUnpack:
   - "**/*.node"
   - "**/better-sqlite3/**"
@@ -43,9 +51,16 @@ mac:
   icon: build/icon.icns
   category: public.app-category.developer-tools
   artifactName: "${productName}-${version}-${arch}.${ext}"
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.inherit.plist
+  notarize: false
   target:
     - target: dmg
-      arch: [arm64, x64]
+      arch: [x64, arm64]
+    - target: zip
+      arch: [x64, arm64]
 win:
   icon: build/icon.ico
   target:
@@ -58,6 +73,7 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
   deleteAppDataOnUninstall: false
+  artifactName: "${productName}.Setup.${version}.${ext}"
 linux:
   icon: build/icon.png
   category: Development
@@ -68,10 +84,10 @@ linux:
       Comment: A native desktop GUI for Claude Code
       Categories: Development;IDE;
       StartupWMClass: codepilot
+  # arch is NOT specified here — controlled by CI via --x64 / --arm64 CLI flags.
+  # Listing both arches here causes electron-builder to build both on every job,
+  # which fails when cross-compiling native modules (zlib-sync -m64 on arm64).
   target:
-    - target: AppImage
-      arch: [x64, arm64]
-    - target: deb
-      arch: [x64, arm64]
-    - target: rpm
-      arch: [x64, arm64]
+    - AppImage
+    - deb
+    - rpm

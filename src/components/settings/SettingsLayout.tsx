@@ -1,115 +1,110 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { HugeiconsIcon } from "@hugeicons/react";
-import type { IconSvgElement } from "@hugeicons/react";
-import {
-  Settings02Icon,
-  CodeIcon,
-} from "@hugeicons/core-free-icons";
-import { Plug01Icon } from "@hugeicons/core-free-icons";
+import { useState, useCallback, useSyncExternalStore } from "react";
+import { type Icon, Gear, Code, UserCircle, Plug, ChartBar } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 import { GeneralSection } from "./GeneralSection";
 import { ProviderManager } from "./ProviderManager";
 import { CliSettingsSection } from "./CliSettingsSection";
+import { UsageStatsSection } from "./UsageStatsSection";
+import { AssistantWorkspaceSection } from "./AssistantWorkspaceSection";
+import { useTranslation } from "@/hooks/useTranslation";
+import type { TranslationKey } from "@/i18n";
 
-type Section = "general" | "providers" | "cli";
+type Section = "general" | "providers" | "cli" | "usage" | "assistant";
 
 interface SidebarItem {
   id: Section;
   label: string;
-  icon: IconSvgElement;
+  icon: Icon;
 }
 
 const sidebarItems: SidebarItem[] = [
-  { id: "general", label: "General", icon: Settings02Icon },
-  { id: "providers", label: "Providers", icon: Plug01Icon },
-  { id: "cli", label: "Agent CLI", icon: CodeIcon },
+  { id: "general", label: "General", icon: Gear },
+  { id: "providers", label: "Providers", icon: Plug },
+  { id: "cli", label: "Claude CLI", icon: Code },
+  { id: "usage", label: "Usage", icon: ChartBar },
+  { id: "assistant", label: "Assistant", icon: UserCircle },
 ];
 
-function getInitialSection(): Section {
-  if (typeof window !== "undefined") {
-    const hash = window.location.hash.replace("#", "");
-    if (sidebarItems.some((item) => item.id === hash)) {
-      return hash as Section;
-    }
+function getSectionFromHash(): Section {
+  if (typeof window === "undefined") return "general";
+  const hash = window.location.hash.replace("#", "");
+  if (sidebarItems.some((item) => item.id === hash)) {
+    return hash as Section;
   }
   return "general";
 }
 
+function subscribeToHash(callback: () => void) {
+  window.addEventListener("hashchange", callback);
+  return () => window.removeEventListener("hashchange", callback);
+}
+
 export function SettingsLayout() {
-  const [activeSection, setActiveSection] = useState<Section>(getInitialSection);
+  // useSyncExternalStore subscribes to hash changes without triggering
+  // the react-hooks/set-state-in-effect lint rule.
+  const hashSection = useSyncExternalStore(subscribeToHash, getSectionFromHash, () => "general" as Section);
 
-  // Sync hash on mount and on popstate
-  useEffect(() => {
-    const onHashChange = () => {
-      const hash = window.location.hash.replace("#", "");
-      if (sidebarItems.some((item) => item.id === hash)) {
-        setActiveSection(hash as Section);
-      }
-    };
-    window.addEventListener("hashchange", onHashChange);
-    return () => window.removeEventListener("hashchange", onHashChange);
-  }, []);
+  // Local state allows immediate UI update on click before the hash updates.
+  const [overrideSection, setOverrideSection] = useState<Section | null>(null);
+  const activeSection = overrideSection ?? hashSection;
 
-  const handleSectionChange = (section: Section) => {
-    setActiveSection(section);
-    window.history.replaceState(null, "", `/settings#${section}`);
+  const { t } = useTranslation();
+
+  const settingsLabelKeys: Record<string, TranslationKey> = {
+    'General': 'settings.general',
+    'Providers': 'settings.providers',
+    'Claude CLI': 'settings.claudeCli',
+    'Usage': 'settings.usage',
+    'Assistant': 'settings.assistant',
   };
+
+  const handleSectionChange = useCallback((section: Section) => {
+    setOverrideSection(section);
+    window.history.replaceState(null, "", `/settings#${section}`);
+    // Clear override so subsequent hash changes take effect
+    queueMicrotask(() => setOverrideSection(null));
+  }, []);
 
   return (
     <div className="flex h-full flex-col">
-      <div className="border-b border-border/50 px-4 pt-3 pb-3 sm:px-6 sm:pt-4 sm:pb-4">
-        <h1 className="text-lg font-semibold sm:text-xl">Settings</h1>
-        <p className="text-xs text-muted-foreground sm:text-sm">
-          Manage CodePilot and Cursor Agent CLI settings
+      <div className="border-b border-border/50 px-6 pt-4 pb-4">
+        <h1 className="text-xl font-semibold">{t('settings.title')}</h1>
+        <p className="text-sm text-muted-foreground">
+          {t('settings.description')}
         </p>
       </div>
 
-      {/* Mobile: horizontal tabs */}
-      <div className="flex overflow-x-auto border-b border-border/50 sm:hidden">
-        {sidebarItems.map((item) => (
-          <button
-            key={item.id}
-            onClick={() => handleSectionChange(item.id)}
-            className={cn(
-              "flex items-center gap-2 whitespace-nowrap px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px",
-              activeSection === item.id
-                ? "border-foreground text-foreground"
-                : "border-transparent text-muted-foreground"
-            )}
-          >
-            <HugeiconsIcon icon={item.icon} className="h-4 w-4 shrink-0" />
-            {item.label}
-          </button>
-        ))}
-      </div>
-
       <div className="flex min-h-0 flex-1">
-        {/* Desktop sidebar */}
-        <nav className="hidden sm:flex w-52 shrink-0 flex-col gap-1 border-r border-border/50 p-3">
+        {/* Sidebar */}
+        <nav className="flex w-52 shrink-0 flex-col gap-1 border-r border-border/50 p-3">
           {sidebarItems.map((item) => (
-            <button
+            <Button
               key={item.id}
+              variant="ghost"
               onClick={() => handleSectionChange(item.id)}
               className={cn(
-                "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors text-left",
+                "justify-start gap-3 px-3 py-2 text-sm font-medium text-left w-full",
                 activeSection === item.id
                   ? "bg-accent text-accent-foreground"
                   : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
               )}
             >
-              <HugeiconsIcon icon={item.icon} className="h-4 w-4 shrink-0" />
-              {item.label}
-            </button>
+              <item.icon size={16} className="shrink-0" />
+              {t(settingsLabelKeys[item.label])}
+            </Button>
           ))}
         </nav>
 
         {/* Content */}
-        <div className="flex-1 overflow-auto p-4 sm:p-6">
+        <div className="flex-1 overflow-auto p-6">
           {activeSection === "general" && <GeneralSection />}
           {activeSection === "providers" && <ProviderManager />}
           {activeSection === "cli" && <CliSettingsSection />}
+          {activeSection === "usage" && <UsageStatsSection />}
+          {activeSection === "assistant" && <AssistantWorkspaceSection />}
         </div>
       </div>
     </div>

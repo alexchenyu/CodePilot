@@ -1,52 +1,164 @@
 'use client';
 
-import { useState, useCallback, useEffect, useRef } from 'react';
-import type { Message, MessagesResponse, PermissionRequestEvent, FileAttachment } from '@/types';
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+import { useRouter } from 'next/navigation';
+import type { Message, MessagesResponse, FileAttachment, SessionStreamSnapshot } from '@/types';
 import { MessageList } from './MessageList';
 import { MessageInput } from './MessageInput';
+import { ChatComposerActionBar } from './ChatComposerActionBar';
+import { ModeIndicator } from './ModeIndicator';
+import { ChatPermissionSelector } from './ChatPermissionSelector';
+import { ContextUsageIndicator } from './ContextUsageIndicator';
+import { ImageGenToggle } from './ImageGenToggle';
+import { Button } from '@/components/ui/button';
 import { usePanel } from '@/hooks/usePanel';
-import { consumeSSEStream } from '@/hooks/useSSEStream';
-
-interface ToolUseInfo {
-  id: string;
-  name: string;
-  input: unknown;
-}
-
-interface ToolResultInfo {
-  tool_use_id: string;
-  content: string;
-}
+import { useTranslation } from '@/hooks/useTranslation';
+import { PermissionPrompt } from './PermissionPrompt';
+import { BatchExecutionDashboard, BatchContextSync } from './batch-image-gen';
+import { setLastGeneratedImages, loadLastGenerated } from '@/lib/image-ref-store';
+import { useChatCommands } from '@/hooks/useChatCommands';
+import { useAssistantTrigger } from '@/hooks/useAssistantTrigger';
+import { useStreamSubscription } from '@/hooks/useStreamSubscription';
+import {
+  startStream,
+  stopStream,
+  getSnapshot,
+  getRewindPoints,
+  respondToPermission,
+} from '@/lib/stream-session-manager';
 
 interface ChatViewProps {
   sessionId: string;
   initialMessages?: Message[];
   initialHasMore?: boolean;
   modelName?: string;
-  initialMode?: string;
+  providerId?: string;
+  initialPermissionProfile?: 'default' | 'full_access';
+  initialMode?: 'code' | 'plan';
+  initialHasSummary?: boolean;
 }
 
-export function ChatView({ sessionId, initialMessages = [], initialHasMore = false, modelName, initialMode }: ChatViewProps) {
-  const { setStreamingSessionId, workingDirectory, setWorkingDirectory, setPanelOpen, setPendingApprovalSessionId } = usePanel();
+/** Maximum messages kept in React state. Older messages are trimmed and reloaded on scroll. */
+const MAX_MESSAGES_IN_MEMORY = 300;
+
+export function ChatView({ sessionId, initialMessages = [], initialHasMore = false, modelName, providerId, initialPermissionProfile, initialMode, initialHasSummary }: ChatViewProps) {
+  const { setStreamingSessionId, workingDirectory, setPendingApprovalSessionId, setDashboardPanelOpen, setFileTreeOpen, setIsAssistantWorkspace } = usePanel();
+  const { t } = useTranslation();
+  const router = useRouter();
   const [messages, setMessages] = useState<Message[]>(initialMessages);
+  const [permissionProfile, setPermissionProfile] = useState<'default' | 'full_access'>(initialPermissionProfile || 'default');
+
+  // Whether this session's working directory matches the configured assistant workspace
+  const [isAssistantProject, setIsAssistantProject] = useState(false);
+  const [assistantName, setAssistantName] = useState('');
+
+  // Workspace mismatch banner state
+  const [workspaceMismatchPath, setWorkspaceMismatchPath] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(initialHasMore);
   const [loadingMore, setLoadingMore] = useState(false);
   const loadingMoreRef = useRef(false);
-  const [streamingContent, setStreamingContent] = useState('');
-  const [isStreaming, setIsStreaming] = useState(false);
-  const [toolUses, setToolUses] = useState<ToolUseInfo[]>([]);
-  const [toolResults, setToolResults] = useState<ToolResultInfo[]>([]);
-  const [statusText, setStatusText] = useState<string | undefined>();
-  const [mode, setMode] = useState(initialMode || 'code');
-  const [currentModel, setCurrentModel] = useState(modelName || 'auto');
-  const [pendingPermission, setPendingPermission] = useState<PermissionRequestEvent | null>(null);
-  const [permissionResolved, setPermissionResolved] = useState<'allow' | 'deny' | null>(null);
-  const [streamingToolOutput, setStreamingToolOutput] = useState('');
-  const toolTimeoutRef = useRef<{ toolName: string; elapsedSeconds: number } | null>(null);
+
+  /** Tracks whether the tail (newest messages) was trimmed during a prepend. */
+  const tailTrimmedRef = useRef(false);
+
+  /**
+   * Capped message setter for append paths (user send, stream completion, commands).
+   *
+   * - Normal case: trims head (oldest) when exceeding cap, sets hasMore = true.
+   * - If tail was previously trimmed by a prepend (user scrolled far up): re-fetches
+   *   the latest messages from DB as a fresh base, then applies the append on top.
+   *   This slides the window back to the bottom without losing the new message.
+   */
+  /**
+   * Reconcile the message window with DB after tail was trimmed.
+   * Preserves local-only cmd-* messages (/help, /cost) since they're never persisted.
+   * Called with a delay to ensure pending persists have completed.
+   */
+  const reconcileWithDb = useCallback(() => {
+    fetch(`/api/chat/sessions/${sessionId}/messages?limit=50`)
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (!data?.messages) return;
+        setHasMore(data.hasMore ?? true);
+        const dbMessages: Message[] = data.messages;
+        setMessages(current => {
+          const localCommands = current.filter(m => m.id.startsWith('cmd-'));
+          if (localCommands.length === 0) return dbMessages;
+          const merged = [...dbMessages, ...localCommands];
+          return merged.length > MAX_MESSAGES_IN_MEMORY
+            ? merged.slice(-MAX_MESSAGES_IN_MEMORY)
+            : merged;
+        });
+      })
+      .catch(() => { /* keep current state as-is */ });
+  }, [sessionId]);
+
+  const cappedSetMessages: typeof setMessages = useCallback((action) => {
+    setMessages((prev) => {
+      const next = typeof action === 'function' ? action(prev) : action;
+      if (next.length > MAX_MESSAGES_IN_MEMORY) {
+        setHasMore(true);
+        return next.slice(-MAX_MESSAGES_IN_MEMORY);
+      }
+      return next;
+    });
+  }, []);
+  const [mode, setMode] = useState<string>(initialMode || 'code');
+  const [currentModel, setCurrentModel] = useState(() => modelName || (typeof window !== 'undefined' ? localStorage.getItem('codepilot:last-model') : null) || 'sonnet');
+  const [currentProviderId, setCurrentProviderId] = useState(() => providerId || (typeof window !== 'undefined' ? localStorage.getItem('codepilot:last-provider-id') : null) || '');
+  const [selectedEffort, setSelectedEffort] = useState<string | undefined>(undefined);
+  const [thinkingMode, setThinkingMode] = useState<string>('adaptive');
+  const [context1m, setContext1m] = useState(false);
+  const [hasSummary, setHasSummary] = useState(initialHasSummary || false);
+
+  // Sync model/provider when session data loads
+  useEffect(() => { if (modelName) setCurrentModel(modelName); }, [modelName]);
+  useEffect(() => { if (providerId) setCurrentProviderId(providerId); }, [providerId]);
+
+  // Fetch provider-specific options (with abort to prevent stale responses on fast switch)
+  useEffect(() => {
+    const pid = currentProviderId || 'env';
+    const controller = new AbortController();
+    fetch(`/api/providers/options?providerId=${encodeURIComponent(pid)}`, { signal: controller.signal })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (!controller.signal.aborted) {
+          setThinkingMode(data?.options?.thinking_mode || 'adaptive');
+          setContext1m(!!data?.options?.context_1m);
+        }
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [currentProviderId]);
+  useEffect(() => { if (initialPermissionProfile) setPermissionProfile(initialPermissionProfile); }, [initialPermissionProfile]);
+
+  // Restore session-scoped last-generated images from sessionStorage
+  useEffect(() => { loadLastGenerated(sessionId); }, [sessionId]);
+
+  // Stream snapshot from the manager — drives all streaming UI
+  const [streamSnapshot, setStreamSnapshot] = useState<SessionStreamSnapshot | null>(
+    () => getSnapshot(sessionId)
+  );
+
+  // Derive rendering state from snapshot
+  const isStreaming = streamSnapshot?.phase === 'active';
+  const streamingContent = streamSnapshot?.streamingContent ?? '';
+  const toolUses = streamSnapshot?.toolUses ?? [];
+  const toolResults = streamSnapshot?.toolResults ?? [];
+  const streamingToolOutput = streamSnapshot?.streamingToolOutput ?? '';
+  const streamingThinkingContent = streamSnapshot?.streamingThinkingContent ?? '';
+  const statusText = streamSnapshot?.statusText;
+  const pendingPermission = streamSnapshot?.pendingPermission ?? null;
+  const permissionResolved = streamSnapshot?.permissionResolved ?? null;
+  const rewindPoints = getRewindPoints(sessionId);
+
+  // Pending image generation notices
+  const pendingImageNoticesRef = useRef<string[]>([]);
+  const sendMessageRef = useRef<(content: string, files?: FileAttachment[], systemPromptAppend?: string, displayOverride?: string) => Promise<void>>(undefined);
+  const initMetaRef = useRef<{ tools?: unknown; slash_commands?: unknown; skills?: unknown } | null>(null);
 
   const handleModeChange = useCallback((newMode: string) => {
     setMode(newMode);
-    // Persist mode to database and notify chat list
     if (sessionId) {
       fetch(`/api/chat/sessions/${sessionId}`, {
         method: 'PATCH',
@@ -55,30 +167,45 @@ export function ChatView({ sessionId, initialMessages = [], initialHasMore = fal
       }).then(() => {
         window.dispatchEvent(new CustomEvent('session-updated'));
       }).catch(() => { /* silent */ });
+
+      fetch('/api/chat/mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId, mode: newMode }),
+      }).catch(() => { /* silent */ });
     }
   }, [sessionId]);
-  const abortControllerRef = useRef<AbortController | null>(null);
 
-  // Ref to keep accumulated streaming content in sync regardless of React batching
-  const accumulatedRef = useRef('');
-  // Ref for sendMessage to allow self-referencing in timeout auto-retry without circular deps
-  const sendMessageRef = useRef<(content: string, files?: FileAttachment[]) => Promise<void>>(undefined);
+  const handleProviderModelChange = useCallback((newProviderId: string, model: string) => {
+    setCurrentProviderId(newProviderId);
+    setCurrentModel(model);
+    fetch(`/api/chat/sessions/${sessionId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, provider_id: newProviderId }),
+    }).catch(() => {});
+  }, [sessionId]);
 
-  // Re-sync streaming content when the window regains visibility (Electron/browser tab switch)
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && accumulatedRef.current) {
-        setStreamingContent(accumulatedRef.current);
-      }
-    };
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    // Also handle Electron-specific focus events
-    window.addEventListener('focus', handleVisibilityChange);
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('focus', handleVisibilityChange);
-    };
-  }, []);
+  // ── Extracted hooks ──
+
+  const handleStreamCompleted = useCallback((phase: string) => {
+    // Only reconcile on normal completion — both messages are persisted.
+    // Error/stopped/idle-timeout paths emit 'completed' before the server
+    // has persisted partial output, so reconciliation would race.
+    if (tailTrimmedRef.current && phase === 'completed') {
+      tailTrimmedRef.current = false;
+      reconcileWithDb();
+    }
+  }, [reconcileWithDb]);
+
+  useStreamSubscription({
+    sessionId,
+    setStreamSnapshot,
+    setStreamingSessionId,
+    setPendingApprovalSessionId,
+    setMessages: cappedSetMessages,
+    onStreamCompleted: handleStreamCompleted,
+  });
 
   const initializedRef = useRef(false);
   useEffect(() => {
@@ -88,25 +215,138 @@ export function ChatView({ sessionId, initialMessages = [], initialHasMore = fal
     }
   }, [initialMessages]);
 
-  // Sync mode when session data loads
-  useEffect(() => {
-    if (initialMode) {
-      setMode(initialMode);
-    }
-  }, [initialMode]);
+  useEffect(() => { setHasMore(initialHasMore); }, [initialHasMore]);
 
-  // Sync hasMore when initial data loads
+  // Detect compression from multiple sources:
+  // 1. Auto-compression: stream-session-manager dispatches 'context-compressed' event
+  // 2. Manual /compact: response message contains the compression marker
   useEffect(() => {
-    setHasMore(initialHasMore);
-  }, [initialHasMore]);
+    if (!hasSummary && messages.some(m => m.role === 'assistant' && m.content.includes('上下文已压缩'))) {
+      setHasSummary(true);
+    }
+  }, [messages, hasSummary]);
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.sessionId === sessionId) {
+        setHasSummary(true);
+      }
+    };
+    window.addEventListener('context-compressed', handler);
+    return () => window.removeEventListener('context-compressed', handler);
+  }, [sessionId]);
+
+  const buildThinkingConfig = useCallback((): { type: string } | undefined => {
+    if (!thinkingMode || thinkingMode === 'adaptive') return { type: 'adaptive' };
+    if (thinkingMode === 'enabled') return { type: 'enabled' };
+    if (thinkingMode === 'disabled') return { type: 'disabled' };
+    return undefined;
+  }, [thinkingMode]);
+
+  const checkAssistantTrigger = useAssistantTrigger({
+    sessionId,
+    workingDirectory,
+    isStreaming,
+    mode,
+    currentModel,
+    currentProviderId,
+    initialMessages,
+    handleModeChange,
+    buildThinkingConfig,
+    sendMessageRef,
+    initMetaRef,
+  });
+
+  // Detect workspace mismatch
+  useEffect(() => {
+    if (!workingDirectory) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/settings/workspace');
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (cancelled) return;
+
+        if (data.path && workingDirectory !== data.path) {
+          setIsAssistantProject(false);
+          setIsAssistantWorkspace(false);
+          const inspectRes = await fetch(`/api/workspace/inspect?path=${encodeURIComponent(workingDirectory)}`);
+          if (!inspectRes.ok || cancelled) return;
+          const inspectData = await inspectRes.json();
+          if (inspectData.hasAssistantData) {
+            setWorkspaceMismatchPath(data.path);
+          } else {
+            setWorkspaceMismatchPath(null);
+          }
+        } else {
+          // workingDirectory matches assistant workspace path
+          const isAssistant = !!data.path;
+          setIsAssistantProject(isAssistant);
+          setWorkspaceMismatchPath(null);
+          setIsAssistantWorkspace(isAssistant);
+          // Default panel is now controlled by the user's "Default Side Panel" setting
+          // in chat/[id]/page.tsx — no longer force-override for assistant workspaces.
+          // Load assistant name for avatar display
+          if (data.path) {
+            try {
+              const summaryRes = await fetch('/api/workspace/summary');
+              if (summaryRes.ok && !cancelled) {
+                const summary = await summaryRes.json();
+                setAssistantName(summary.name || '');
+                // Store buddy emoji globally for MessageItem avatar rendering
+                // Store buddy info globally for MessageItem avatar rendering
+                (globalThis as Record<string, unknown>).__codepilot_buddy_info__ = summary.buddy
+                  ? { emoji: summary.buddy.emoji, species: summary.buddy.species, rarity: summary.buddy.rarity }
+                  : undefined;
+              }
+            } catch { /* ignore */ }
+          }
+        }
+      } catch {
+        // ignore
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [workingDirectory]);
+
+  // Listen for workspace-switched events
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.newPath && workingDirectory && workingDirectory === detail.oldPath) {
+        setWorkspaceMismatchPath(detail.newPath);
+      }
+    };
+    window.addEventListener('assistant-workspace-switched', handler);
+    return () => window.removeEventListener('assistant-workspace-switched', handler);
+  }, [workingDirectory]);
+
+  const handleOpenNewAssistant = useCallback(async () => {
+    try {
+      const model = typeof window !== 'undefined' ? localStorage.getItem('codepilot:last-model') || '' : '';
+      const provider_id = typeof window !== 'undefined' ? localStorage.getItem('codepilot:last-provider-id') || '' : '';
+      const res = await fetch('/api/workspace/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'checkin', model, provider_id }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        window.dispatchEvent(new CustomEvent('session-created'));
+        router.push(`/chat/${data.session.id}`);
+      }
+    } catch (e) {
+      console.error('[ChatView] Failed to open assistant session:', e);
+    }
+  }, [router]);
 
   const loadEarlierMessages = useCallback(async () => {
-    // Use ref as atomic lock to prevent double-fetch from rapid clicks
     if (loadingMoreRef.current || !hasMore || messages.length === 0) return;
     loadingMoreRef.current = true;
     setLoadingMore(true);
     try {
-      // Use _rowid of the earliest message as cursor
       const earliest = messages[0];
       const earliestRowId = (earliest as Message & { _rowid?: number })._rowid;
       if (!earliestRowId) return;
@@ -115,7 +355,16 @@ export function ChatView({ sessionId, initialMessages = [], initialHasMore = fal
       const data: MessagesResponse = await res.json();
       setHasMore(data.hasMore ?? false);
       if (data.messages.length > 0) {
-        setMessages(prev => [...data.messages, ...prev]);
+        setMessages(prev => {
+          const merged = [...data.messages, ...prev];
+          if (merged.length > MAX_MESSAGES_IN_MEMORY) {
+            // Trim newest messages off the tail — they'll be restored when
+            // the next append triggers cappedSetMessages (re-fetches from DB).
+            tailTrimmedRef.current = true;
+            return merged.slice(0, MAX_MESSAGES_IN_MEMORY);
+          }
+          return merged;
+        });
       }
     } finally {
       loadingMoreRef.current = false;
@@ -123,58 +372,27 @@ export function ChatView({ sessionId, initialMessages = [], initialHasMore = fal
     }
   }, [sessionId, messages, hasMore]);
 
-  const stopStreaming = useCallback(() => {
-    abortControllerRef.current?.abort();
-    abortControllerRef.current = null;
-  }, []);
+  const stopStreaming = useCallback(() => { stopStream(sessionId); }, [sessionId]);
 
-  const handlePermissionResponse = useCallback(async (decision: 'allow' | 'allow_session' | 'deny') => {
-    if (!pendingPermission) return;
-
-    const body: { permissionRequestId: string; decision: { behavior: 'allow'; updatedPermissions?: unknown[] } | { behavior: 'deny'; message?: string } } = {
-      permissionRequestId: pendingPermission.permissionRequestId,
-      decision: decision === 'deny'
-        ? { behavior: 'deny', message: 'User denied permission' }
-        : {
-            behavior: 'allow',
-            ...(decision === 'allow_session' && pendingPermission.suggestions
-              ? { updatedPermissions: pendingPermission.suggestions }
-              : {}),
-          },
-    };
-
-    setPermissionResolved(decision === 'deny' ? 'deny' : 'allow');
-    setPendingApprovalSessionId('');
-
-    try {
-      await fetch('/api/chat/permission', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-    } catch {
-      // Best effort - the stream will handle timeout
-    }
-
-    // Clear permission state after a short delay so user sees the feedback
-    setTimeout(() => {
-      setPendingPermission(null);
-      setPermissionResolved(null);
-    }, 1000);
-  }, [pendingPermission, setPendingApprovalSessionId]);
+  const handlePermissionResponse = useCallback(
+    async (decision: 'allow' | 'allow_session' | 'deny', updatedInput?: Record<string, unknown>, denyMessage?: string) => {
+      setPendingApprovalSessionId('');
+      await respondToPermission(sessionId, decision, updatedInput, denyMessage);
+    },
+    [sessionId, setPendingApprovalSessionId]
+  );
 
   const sendMessage = useCallback(
-    async (content: string, files?: FileAttachment[]) => {
+    async (content: string, files?: FileAttachment[], systemPromptAppend?: string, displayOverride?: string) => {
       if (isStreaming) return;
 
-      // Build display content: embed file metadata as HTML comment for MessageItem to parse
-      let displayContent = content;
+      const displayUserContent = displayOverride || content;
+      let displayContent = displayUserContent;
       if (files && files.length > 0) {
-        const fileMeta = files.map(f => ({ id: f.id, name: f.name, type: f.type, size: f.size, data: f.data }));
-        displayContent = `<!--files:${JSON.stringify(fileMeta)}-->${content}`;
+        const fileMeta = files.map(f => ({ id: f.id, name: f.name, type: f.type, size: f.size }));
+        displayContent = `<!--files:${JSON.stringify(fileMeta)}-->${displayUserContent}`;
       }
 
-      // Optimistic: add user message to UI immediately
       const userMessage: Message = {
         id: 'temp-' + Date.now(),
         session_id: sessionId,
@@ -183,271 +401,161 @@ export function ChatView({ sessionId, initialMessages = [], initialHasMore = fal
         created_at: new Date().toISOString(),
         token_usage: null,
       };
-      setMessages((prev) => [...prev, userMessage]);
-      setIsStreaming(true);
-      setStreamingSessionId(sessionId);
-      setStreamingContent('');
-      accumulatedRef.current = '';
-      setToolUses([]);
-      setToolResults([]);
-      setStatusText(undefined);
+      cappedSetMessages((prev) => [...prev, userMessage]);
 
-      const controller = new AbortController();
-      abortControllerRef.current = controller;
+      const notices = pendingImageNoticesRef.current.length > 0
+        ? [...pendingImageNoticesRef.current]
+        : undefined;
+      if (notices) pendingImageNoticesRef.current = [];
 
-      let accumulated = '';
+      startStream({
+        sessionId,
+        content,
+        mode,
+        model: currentModel,
+        providerId: currentProviderId,
+        files,
+        systemPromptAppend,
+        pendingImageNotices: notices,
+        effort: selectedEffort,
+        thinking: buildThinkingConfig(),
+        context1m,
+        displayOverride,
+        onModeChanged: (sdkMode) => {
+          const uiMode = sdkMode === 'plan' ? 'plan' : 'code';
+          handleModeChange(uiMode);
+        },
+        sendMessageFn: (retryContent: string, retryFiles?: FileAttachment[]) => {
+          sendMessageRef.current?.(retryContent, retryFiles);
+        },
+        onInitMeta: (meta) => {
+          initMetaRef.current = meta;
+          console.log('[ChatView] SDK init meta received:', meta);
+        },
+      });
 
-      try {
-        const response = await fetch('/api/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            session_id: sessionId,
-            content,
-            mode,
-            model: currentModel,
-            ...(files && files.length > 0 ? { files } : {}),
-          }),
-          signal: controller.signal,
-        });
-
-        if (!response.ok) {
-          const err = await response.json();
-          throw new Error(err.error || 'Failed to send message');
-        }
-
-        const reader = response.body?.getReader();
-        if (!reader) throw new Error('No response stream');
-
-        const result = await consumeSSEStream(reader, {
-          onText: (acc) => {
-            accumulated = acc;
-            accumulatedRef.current = acc;
-            setStreamingContent(acc);
-          },
-          onThinking: () => {
-            setStatusText('Thinking...');
-          },
-          onToolUse: (tool) => {
-            setStreamingToolOutput('');
-            setToolUses((prev) => {
-              if (prev.some((t) => t.id === tool.id)) return prev;
-              return [...prev, tool];
-            });
-          },
-          onToolResult: (res) => {
-            setStreamingToolOutput('');
-            setToolResults((prev) => [...prev, res]);
-          },
-          onToolOutput: (data) => {
-            setStreamingToolOutput((prev) => {
-              const next = prev + (prev ? '\n' : '') + data;
-              return next.length > 5000 ? next.slice(-5000) : next;
-            });
-          },
-          onToolProgress: (toolName, elapsed) => {
-            setStatusText(`Running ${toolName}... (${elapsed}s)`);
-          },
-          onStatus: (text) => {
-            if (text?.startsWith('Connected (')) {
-              setStatusText(text);
-              setTimeout(() => setStatusText(undefined), 2000);
-            } else {
-              setStatusText(text);
-            }
-          },
-          onResult: () => { /* token usage captured by consumeSSEStream */ },
-          onPermissionRequest: (permData) => {
-            setPendingPermission(permData);
-            setPermissionResolved(null);
-            setPendingApprovalSessionId(sessionId);
-          },
-          onToolTimeout: (toolName, elapsedSeconds) => {
-            toolTimeoutRef.current = { toolName, elapsedSeconds };
-          },
-          onError: (acc) => {
-            accumulated = acc;
-            accumulatedRef.current = acc;
-            setStreamingContent(acc);
-          },
-        });
-
-        accumulated = result.accumulated;
-
-        // Add the assistant message to the list
-        if (accumulated.trim()) {
-          const assistantMessage: Message = {
-            id: 'temp-assistant-' + Date.now(),
-            session_id: sessionId,
-            role: 'assistant',
-            content: accumulated.trim(),
-            created_at: new Date().toISOString(),
-            token_usage: result.tokenUsage ? JSON.stringify(result.tokenUsage) : null,
-          };
-          setMessages((prev) => [...prev, assistantMessage]);
-        }
-      } catch (error) {
-        if (error instanceof DOMException && error.name === 'AbortError') {
-          const timeoutInfo = toolTimeoutRef.current;
-          if (timeoutInfo) {
-            // Tool execution timed out — save partial content and auto-retry
-            if (accumulated.trim()) {
-              const partialMessage: Message = {
-                id: 'temp-assistant-' + Date.now(),
-                session_id: sessionId,
-                role: 'assistant',
-                content: accumulated.trim() + `\n\n*(tool ${timeoutInfo.toolName} timed out after ${timeoutInfo.elapsedSeconds}s)*`,
-                created_at: new Date().toISOString(),
-                token_usage: null,
-              };
-              setMessages((prev) => [...prev, partialMessage]);
-            }
-            // Clean up before auto-retry
-            toolTimeoutRef.current = null;
-            setIsStreaming(false);
-            setStreamingSessionId('');
-            setStreamingContent('');
-            accumulatedRef.current = '';
-            setToolUses([]);
-            setToolResults([]);
-            setStreamingToolOutput('');
-            setStatusText(undefined);
-            setPendingPermission(null);
-            setPermissionResolved(null);
-            setPendingApprovalSessionId('');
-            abortControllerRef.current = null;
-            // Auto-retry: send a follow-up message telling the model to adjust strategy
-            setTimeout(() => {
-              sendMessageRef.current?.(
-                `The previous tool "${timeoutInfo.toolName}" timed out after ${timeoutInfo.elapsedSeconds} seconds. Please try a different approach to accomplish the task. Avoid repeating the same operation that got stuck.`
-              );
-            }, 500);
-            return; // Skip the normal finally cleanup since we did it above
-          }
-          // User manually stopped generation — add partial content
-          if (accumulated.trim()) {
-            const partialMessage: Message = {
-              id: 'temp-assistant-' + Date.now(),
-              session_id: sessionId,
-              role: 'assistant',
-              content: accumulated.trim() + '\n\n*(generation stopped)*',
-              created_at: new Date().toISOString(),
-              token_usage: null,
-            };
-            setMessages((prev) => [...prev, partialMessage]);
-          }
-        } else {
-          const errMsg = error instanceof Error ? error.message : 'Unknown error';
-          const errorMessage: Message = {
-            id: 'temp-error-' + Date.now(),
-            session_id: sessionId,
-            role: 'assistant',
-            content: `**Error:** ${errMsg}`,
-            created_at: new Date().toISOString(),
-            token_usage: null,
-          };
-          setMessages((prev) => [...prev, errorMessage]);
-        }
-      } finally {
-        toolTimeoutRef.current = null;
-        setIsStreaming(false);
-        setStreamingSessionId('');
-        setStreamingContent('');
-        accumulatedRef.current = '';
-        setToolUses([]);
-        setToolResults([]);
-        setStreamingToolOutput('');
-        setStatusText(undefined);
-        setPendingPermission(null);
-        setPermissionResolved(null);
-        setPendingApprovalSessionId('');
-        abortControllerRef.current = null;
-        // Notify file tree to refresh after AI finishes
-        window.dispatchEvent(new CustomEvent('refresh-file-tree'));
-      }
+      // If the message window is stale (tailTrimmedRef), reconciliation will
+      // happen on stream completion via onStreamCompleted — at that point both
+      // user and assistant messages are persisted, so no race is possible.
     },
-    [sessionId, isStreaming, setStreamingSessionId, setPendingApprovalSessionId, mode, currentModel]
+    [sessionId, isStreaming, mode, currentModel, currentProviderId, selectedEffort, context1m, buildThinkingConfig, handleModeChange]
   );
 
-  // Keep sendMessageRef in sync so timeout auto-retry can call it
   sendMessageRef.current = sendMessage;
 
-  const handleCommand = useCallback((command: string) => {
-    switch (command) {
-      case '/help': {
-        const helpMessage: Message = {
-          id: 'cmd-' + Date.now(),
-          session_id: sessionId,
-          role: 'assistant',
-          content: `## Available Commands\n\n### Instant Commands\n- **/help** — Show this help message\n- **/clear** — Clear conversation history\n- **/cost** — Show token usage statistics\n\n### Prompt Commands (shown as badge, add context then send)\n- **/compact** — Compress conversation context\n- **/doctor** — Diagnose project health\n- **/init** — Initialize project rules\n- **/review** — Review code quality\n- **/terminal-setup** — Configure terminal settings\n- **/memory** — Edit project memory file\n\n### Custom Skills\nSkills from \`~/.claude/commands/\` and project \`.claude/commands/\` are also available via \`/\`.\n\n**Tips:**\n- Type \`/\` to browse commands and skills\n- Type \`@\` to mention files\n- Use Shift+Enter for new line\n- Select a project folder to enable file operations`,
-          created_at: new Date().toISOString(),
-          token_usage: null,
-        };
-        setMessages(prev => [...prev, helpMessage]);
-        break;
+  // Expose widget drill-down bridge: widgets can call window.__widgetSendMessage(text)
+  // to trigger follow-up questions (e.g. clicking a node to get deeper explanation)
+  // Hardened: type-checked, length-limited, rate-limited, sanitized.
+  useEffect(() => {
+    let lastCallTime = 0;
+    const RATE_LIMIT_MS = 2000;
+    const MAX_LENGTH = 500;
+
+    const bridge = (text: unknown) => {
+      if (typeof text !== 'string') return;
+      const trimmed = text.trim();
+      if (!trimmed || trimmed.length > MAX_LENGTH) return;
+
+      // Rate limit: max one message per 2 seconds
+      const now = Date.now();
+      if (now - lastCallTime < RATE_LIMIT_MS) return;
+      lastCallTime = now;
+
+      sendMessageRef.current?.(trimmed);
+    };
+    (window as unknown as Record<string, unknown>).__widgetSendMessage = bridge;
+    return () => {
+      delete (window as unknown as Record<string, unknown>).__widgetSendMessage;
+    };
+  }, []);
+
+  // Listen for widget pin requests from PinnableWidget buttons.
+  // The AI model receives the widget code + instructions and calls the
+  // codepilot_dashboard_pin MCP tool to complete the pin operation.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { widgetCode, title } = (e as CustomEvent).detail || {};
+      if (!widgetCode || !sendMessageRef.current) return;
+
+      const instruction = `请将下面的可视化组件固定到项目看板。\n\n标题建议：${title || 'Untitled'}\n\n组件代码：\n${widgetCode}`;
+      sendMessageRef.current(instruction, undefined, undefined, `📌 固定「${title || 'Widget'}」到看板`);
+    };
+    window.addEventListener('widget-pin-request', handler);
+    return () => window.removeEventListener('widget-pin-request', handler);
+  }, []);
+
+  // Listen for dashboard widget drilldown (click title → conversation)
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { title, dataContract } = (e as CustomEvent).detail || {};
+      if (!title || !sendMessageRef.current) return;
+      sendMessageRef.current(
+        `请深入分析看板组件「${title}」的数据。\n数据契约：${dataContract || '无'}`,
+        undefined, undefined,
+        `🔍 分析「${title}」`,
+      );
+    };
+    window.addEventListener('dashboard-widget-drilldown', handler);
+    return () => window.removeEventListener('dashboard-widget-drilldown', handler);
+  }, []);
+
+  // Listen for dashboard command input
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { text } = (e as CustomEvent).detail || {};
+      if (!text || !sendMessageRef.current) return;
+      sendMessageRef.current(text, undefined, undefined, text);
+    };
+    window.addEventListener('dashboard-command', handler);
+    return () => window.removeEventListener('dashboard-command', handler);
+  }, []);
+
+  const handleCommand = useChatCommands({ sessionId, messages, setMessages: cappedSetMessages, sendMessage });
+
+  // Listen for image generation completion
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (!detail) return;
+      const paths = (detail.images || [])
+        .map((img: { localPath?: string }) => img.localPath)
+        .filter(Boolean);
+      const pathInfo = paths.length > 0 ? `\nGenerated image file paths:\n${paths.map((p: string) => `- ${p}`).join('\n')}` : '';
+      const notice = `[Image generation completed]\n- Prompt: "${detail.prompt}"\n- Aspect ratio: ${detail.aspectRatio}\n- Resolution: ${detail.resolution}${pathInfo}`;
+
+      if (paths.length > 0) {
+        setLastGeneratedImages(sessionId, paths);
       }
-      case '/clear':
-        setMessages([]);
-        // Also clear database messages and reset SDK session
-        if (sessionId) {
-          fetch(`/api/chat/sessions/${sessionId}`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ clear_messages: true }),
-          }).catch(() => { /* silent */ });
-        }
-        break;
-      case '/cost': {
-        // Aggregate token usage from all messages in this session
-        let totalInput = 0;
-        let totalOutput = 0;
-        let totalCacheRead = 0;
-        let totalCacheCreation = 0;
-        let totalCost = 0;
-        let turnCount = 0;
 
-        for (const msg of messages) {
-          if (msg.token_usage) {
-            try {
-              const usage = typeof msg.token_usage === 'string' ? JSON.parse(msg.token_usage) : msg.token_usage;
-              totalInput += usage.input_tokens || 0;
-              totalOutput += usage.output_tokens || 0;
-              totalCacheRead += usage.cache_read_input_tokens || 0;
-              totalCacheCreation += usage.cache_creation_input_tokens || 0;
-              if (usage.cost_usd) totalCost += usage.cost_usd;
-              turnCount++;
-            } catch { /* skip */ }
-          }
-        }
+      pendingImageNoticesRef.current.push(notice);
 
-        const totalTokens = totalInput + totalOutput;
-        let content: string;
-
-        if (turnCount === 0) {
-          content = `## Token Usage\n\nNo token usage data yet. Send a message first.`;
-        } else {
-          content = `## Token Usage\n\n| Metric | Count |\n|--------|-------|\n| Input tokens | ${totalInput.toLocaleString()} |\n| Output tokens | ${totalOutput.toLocaleString()} |\n| Cache read | ${totalCacheRead.toLocaleString()} |\n| Cache creation | ${totalCacheCreation.toLocaleString()} |\n| **Total tokens** | **${totalTokens.toLocaleString()}** |\n| Turns | ${turnCount} |${totalCost > 0 ? `\n| **Estimated cost** | **$${totalCost.toFixed(4)}** |` : ''}`;
-        }
-
-        const costMessage: Message = {
-          id: 'cmd-' + Date.now(),
-          session_id: sessionId,
-          role: 'assistant',
-          content,
-          created_at: new Date().toISOString(),
-          token_usage: null,
-        };
-        setMessages(prev => [...prev, costMessage]);
-        break;
-      }
-      default:
-        // This shouldn't be reached since non-immediate commands are handled via badge
-        sendMessage(command);
-    }
-  }, [sessionId, sendMessage]);
+      const dbNotice = `[__IMAGE_GEN_NOTICE__ prompt: "${detail.prompt}", aspect ratio: ${detail.aspectRatio}, resolution: ${detail.resolution}${paths.length > 0 ? `, file path: ${paths.join(', ')}` : ''}]`;
+      fetch('/api/chat/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId, role: 'user', content: dbNotice }),
+      }).catch(() => {});
+    };
+    window.addEventListener('image-gen-completed', handler);
+    return () => window.removeEventListener('image-gen-completed', handler);
+  }, [sessionId]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      {/* Workspace mismatch banner */}
+      {workspaceMismatchPath && (
+        <div className="flex items-center justify-between gap-3 border-b border-status-warning/30 bg-status-warning-muted px-4 py-2">
+          <span className="text-xs text-status-warning-foreground">
+            {t('assistant.switchedBanner', { path: workspaceMismatchPath })}
+          </span>
+          <Button
+            onClick={handleOpenNewAssistant}
+            className="shrink-0 rounded-md bg-status-warning px-3 py-1 text-xs font-medium text-white hover:bg-status-warning/80 transition-colors"
+          >
+            {t('assistant.openNewAssistant')}
+          </Button>
+        </div>
+      )}
       <MessageList
         messages={messages}
         streamingContent={streamingContent}
@@ -455,16 +563,31 @@ export function ChatView({ sessionId, initialMessages = [], initialHasMore = fal
         toolUses={toolUses}
         toolResults={toolResults}
         streamingToolOutput={streamingToolOutput}
+        streamingThinkingContent={streamingThinkingContent}
         statusText={statusText}
-        pendingPermission={pendingPermission}
-        onPermissionResponse={handlePermissionResponse}
-        permissionResolved={permissionResolved}
         onForceStop={stopStreaming}
         hasMore={hasMore}
         loadingMore={loadingMore}
         onLoadMore={loadEarlierMessages}
+        rewindPoints={rewindPoints}
+        sessionId={sessionId}
+        isAssistantProject={isAssistantProject}
+        assistantName={assistantName}
       />
+      {/* Permission prompt */}
+      <PermissionPrompt
+        pendingPermission={pendingPermission}
+        permissionResolved={permissionResolved}
+        onPermissionResponse={handlePermissionResponse}
+        toolUses={toolUses}
+        permissionProfile={permissionProfile}
+      />
+      {/* Batch image generation panels */}
+      <BatchExecutionDashboard />
+      <BatchContextSync />
+
       <MessageInput
+        key={sessionId}
         onSend={sendMessage}
         onCommand={handleCommand}
         onStop={stopStreaming}
@@ -473,9 +596,33 @@ export function ChatView({ sessionId, initialMessages = [], initialHasMore = fal
         sessionId={sessionId}
         modelName={currentModel}
         onModelChange={setCurrentModel}
+        providerId={currentProviderId}
+        onProviderModelChange={handleProviderModelChange}
         workingDirectory={workingDirectory}
-        mode={mode}
-        onModeChange={handleModeChange}
+        onAssistantTrigger={checkAssistantTrigger}
+        effort={selectedEffort}
+        onEffortChange={setSelectedEffort}
+        sdkInitMeta={initMetaRef.current}
+        isAssistantProject={isAssistantProject}
+        hasMessages={messages.length > 0}
+      />
+      <ChatComposerActionBar
+        left={<><ModeIndicator mode={mode} onModeChange={handleModeChange} disabled={isStreaming} /><ImageGenToggle /></>}
+        center={
+          <ChatPermissionSelector
+            sessionId={sessionId}
+            permissionProfile={permissionProfile}
+            onPermissionChange={setPermissionProfile}
+          />
+        }
+        right={
+          <ContextUsageIndicator
+            messages={messages}
+            modelName={currentModel}
+            context1m={context1m}
+            hasSummary={hasSummary}
+          />
+        }
       />
     </div>
   );

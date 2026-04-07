@@ -17,14 +17,17 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { HugeiconsIcon } from "@hugeicons/react";
 import {
-  FloppyDiskIcon,
-  ReloadIcon,
-  CodeIcon,
-  SlidersHorizontalIcon,
-  Loading02Icon,
-} from "@hugeicons/core-free-icons";
+  FloppyDisk,
+  ArrowClockwise,
+  Code,
+  SlidersHorizontal,
+  SpinnerGap,
+  FileArrowDown,
+} from "@/components/ui/icon";
+import { ImportSessionDialog } from "@/components/layout/ImportSessionDialog";
+import { useTranslation } from "@/hooks/useTranslation";
+import type { TranslationKey } from "@/i18n";
 
 interface SettingsData {
   [key: string]: unknown;
@@ -47,6 +50,7 @@ const KNOWN_FIELDS = [
 
 export function CliSettingsSection() {
   const [settings, setSettings] = useState<SettingsData>({});
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [originalSettings, setOriginalSettings] = useState<SettingsData>({});
   const [jsonText, setJsonText] = useState("");
   const [jsonError, setJsonError] = useState("");
@@ -55,6 +59,19 @@ export function CliSettingsSection() {
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
   const [pendingSaveAction, setPendingSaveAction] = useState<"form" | "json" | null>(null);
+  const { t } = useTranslation();
+
+  const knownFieldKeys: Record<string, { label: TranslationKey; description: TranslationKey }> = {
+    permissions: { label: 'cli.permissions', description: 'cli.permissionsDesc' },
+    env: { label: 'cli.envVars', description: 'cli.envVarsDesc' },
+  };
+
+  // Map dynamic CLI settings keys to translation keys (for fields not in KNOWN_FIELDS)
+  const dynamicFieldLabels: Record<string, TranslationKey> = {
+    skipDangerousModePermissionPrompt: 'cli.field.skipDangerousModePermissionPrompt',
+    verbose: 'cli.field.verbose',
+    theme: 'cli.field.theme',
+  };
 
   const fetchSettings = useCallback(async () => {
     try {
@@ -132,7 +149,7 @@ export function CliSettingsSection() {
       setJsonText(JSON.stringify(parsed, null, 2));
       setJsonError("");
     } catch {
-      setJsonError("Cannot format: invalid JSON");
+      setJsonError(t('cli.formatError'));
     }
   };
 
@@ -148,23 +165,40 @@ export function CliSettingsSection() {
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
-        <HugeiconsIcon icon={Loading02Icon} className="h-5 w-5 animate-spin text-muted-foreground" />
-        <span className="ml-2 text-sm text-muted-foreground">Loading settings...</span>
+        <SpinnerGap size={20} className="animate-spin text-muted-foreground" />
+        <span className="ml-2 text-sm text-muted-foreground">{t('cli.loadingSettings')}</span>
       </div>
     );
   }
 
   return (
     <div className="max-w-3xl">
+      {/* Import CLI Session */}
+      <div className="mb-6">
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-2"
+          onClick={() => setImportDialogOpen(true)}
+        >
+          <FileArrowDown size={14} />
+          {t('chatList.importFromCli')}
+        </Button>
+        <ImportSessionDialog
+          open={importDialogOpen}
+          onOpenChange={setImportDialogOpen}
+        />
+      </div>
+
       <Tabs defaultValue="form">
         <TabsList className="mb-4">
           <TabsTrigger value="form" className="gap-2">
-            <HugeiconsIcon icon={SlidersHorizontalIcon} className="h-4 w-4" />
-            Visual Editor
+            <SlidersHorizontal size={16} />
+            {t('cli.form')}
           </TabsTrigger>
           <TabsTrigger value="json" className="gap-2">
-            <HugeiconsIcon icon={CodeIcon} className="h-4 w-4" />
-            JSON Editor
+            <Code size={16} />
+            {t('cli.json')}
           </TabsTrigger>
         </TabsList>
 
@@ -175,8 +209,8 @@ export function CliSettingsSection() {
                 key={field.key}
                 className="rounded-lg border border-border/50 p-4 transition-shadow hover:shadow-sm"
               >
-                <Label className="text-sm font-medium">{field.label}</Label>
-                <p className="mb-2 text-xs text-muted-foreground">{field.description}</p>
+                <Label className="text-sm font-medium">{t(knownFieldKeys[field.key]?.label ?? field.label as TranslationKey)}</Label>
+                <p className="mb-2 text-xs text-muted-foreground">{t(knownFieldKeys[field.key]?.description ?? field.description as TranslationKey)}</p>
                 <Textarea
                   value={
                     typeof settings[field.key] === "object"
@@ -204,7 +238,7 @@ export function CliSettingsSection() {
                   key={key}
                   className="rounded-lg border border-border/50 p-4 transition-shadow hover:shadow-sm"
                 >
-                  <Label className="text-sm font-medium">{key}</Label>
+                  <Label className="text-sm font-medium">{dynamicFieldLabels[key] ? t(dynamicFieldLabels[key]) : key}</Label>
                   {typeof value === "boolean" ? (
                     <div className="mt-2 flex items-center gap-2">
                       <Switch
@@ -212,7 +246,7 @@ export function CliSettingsSection() {
                         onCheckedChange={(checked) => updateField(key, checked)}
                       />
                       <span className="text-sm text-muted-foreground">
-                        {value ? "Enabled" : "Disabled"}
+                        {value ? t('common.enabled') : t('common.disabled')}
                       </span>
                     </div>
                   ) : typeof value === "string" ? (
@@ -241,19 +275,19 @@ export function CliSettingsSection() {
             <div className="flex items-center gap-3">
               <Button onClick={() => confirmSave("form")} disabled={!hasChanges || saving} className="gap-2">
                 {saving ? (
-                  <HugeiconsIcon icon={Loading02Icon} className="h-4 w-4 animate-spin" />
+                  <SpinnerGap size={16} className="animate-spin" />
                 ) : (
-                  <HugeiconsIcon icon={FloppyDiskIcon} className="h-4 w-4" />
+                  <FloppyDisk size={16} />
                 )}
-                {saving ? "Saving..." : "Save Changes"}
+                {saving ? t('provider.saving') : t('cli.save')}
               </Button>
               <Button variant="outline" onClick={handleReset} disabled={!hasChanges} className="gap-2">
-                <HugeiconsIcon icon={ReloadIcon} className="h-4 w-4" />
-                Reset
+                <ArrowClockwise size={16} />
+                {t('cli.reset')}
               </Button>
               {saveSuccess && (
-                <span className="text-sm text-green-600 dark:text-green-400">
-                  Settings saved successfully
+                <span className="text-sm text-status-success-foreground">
+                  {t('cli.settingsSaved')}
                 </span>
               )}
             </div>
@@ -276,23 +310,23 @@ export function CliSettingsSection() {
             <div className="flex items-center gap-3">
               <Button onClick={() => confirmSave("json")} disabled={saving} className="gap-2">
                 {saving ? (
-                  <HugeiconsIcon icon={Loading02Icon} className="h-4 w-4 animate-spin" />
+                  <SpinnerGap size={16} className="animate-spin" />
                 ) : (
-                  <HugeiconsIcon icon={FloppyDiskIcon} className="h-4 w-4" />
+                  <FloppyDisk size={16} />
                 )}
-                {saving ? "Saving..." : "Save JSON"}
+                {saving ? t('provider.saving') : t('cli.save')}
               </Button>
               <Button variant="outline" onClick={handleFormatJson} className="gap-2">
-                <HugeiconsIcon icon={CodeIcon} className="h-4 w-4" />
-                Format
+                <Code size={16} />
+                {t('cli.format')}
               </Button>
               <Button variant="outline" onClick={handleReset} className="gap-2">
-                <HugeiconsIcon icon={ReloadIcon} className="h-4 w-4" />
-                Reset
+                <ArrowClockwise size={16} />
+                {t('cli.reset')}
               </Button>
               {saveSuccess && (
-                <span className="text-sm text-green-600 dark:text-green-400">
-                  Settings saved successfully
+                <span className="text-sm text-status-success-foreground">
+                  {t('cli.settingsSaved')}
                 </span>
               )}
             </div>
@@ -304,15 +338,15 @@ export function CliSettingsSection() {
       <AlertDialog open={showConfirmDialog} onOpenChange={setShowConfirmDialog}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Confirm Save</AlertDialogTitle>
+            <AlertDialogTitle>{t('cli.confirmSaveTitle')}</AlertDialogTitle>
             <AlertDialogDescription>
-              This will overwrite your current ~/.claude/settings.json file. Are you sure you want to continue?
+              {t('cli.confirmSaveDesc')}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
             <AlertDialogAction onClick={() => pendingSaveAction && handleSave(pendingSaveAction)}>
-              Save
+              {t('common.save')}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

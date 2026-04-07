@@ -9,12 +9,12 @@ import {
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import {
-  ChevronRightIcon,
-  FileIcon,
-  FolderIcon,
-  FolderOpenIcon,
-  PlusIcon,
-} from "lucide-react";
+  Folder,
+  FolderOpen,
+  File,
+  CaretRight,
+  Plus,
+} from "@phosphor-icons/react";
 import {
   createContext,
   useCallback,
@@ -142,35 +142,39 @@ export const FileTreeFolder = ({
         <div
           className={cn("", className)}
           role="treeitem"
-          tabIndex={0}
           {...props}
         >
-          <div
-            className="flex w-full items-center gap-1 rounded px-2 py-1 text-left transition-colors hover:bg-muted/50"
-          >
-            <CollapsibleTrigger asChild>
-              <button
-                type="button"
-                className="shrink-0 rounded p-0.5 hover:bg-muted"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <ChevronRightIcon
+          <CollapsibleTrigger asChild>
+            <div
+              className="flex w-full cursor-pointer items-center gap-1 rounded px-2 py-1 text-left transition-colors hover:bg-muted/50"
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  handleToggle();
+                }
+              }}
+            >
+              <span className="shrink-0 rounded p-0.5">
+                <CaretRight
+                  size={16}
                   className={cn(
-                    "size-4 text-muted-foreground transition-transform",
+                    "text-muted-foreground transition-transform",
                     isExpanded && "rotate-90"
                   )}
                 />
-              </button>
-            </CollapsibleTrigger>
-            <FileTreeIcon>
-              {isExpanded ? (
-                <FolderOpenIcon className="size-4 text-blue-500" />
-              ) : (
-                <FolderIcon className="size-4 text-blue-500" />
-              )}
-            </FileTreeIcon>
-            <FileTreeName>{name}</FileTreeName>
-          </div>
+              </span>
+              <FileTreeIcon>
+                {isExpanded ? (
+                  <FolderOpen size={16} className="text-muted-foreground" />
+                ) : (
+                  <Folder size={16} className="text-muted-foreground" />
+                )}
+              </FileTreeIcon>
+              <FileTreeName>{name}</FileTreeName>
+            </div>
+          </CollapsibleTrigger>
           <CollapsibleContent>
             <div className="ml-4 border-l pl-2">{children}</div>
           </CollapsibleContent>
@@ -246,10 +250,8 @@ export const FileTreeFile = ({
       >
         {children ?? (
           <>
-            {/* Spacer for alignment */}
-            <span className="size-4" />
             <FileTreeIcon>
-              {icon ?? <FileIcon className="size-4 text-muted-foreground" />}
+              {icon ?? <File size={16} className="text-muted-foreground" />}
             </FileTreeIcon>
             <FileTreeName>{name}</FileTreeName>
             {onAdd && (
@@ -259,7 +261,7 @@ export const FileTreeFile = ({
                 onClick={handleAdd}
                 title="Add to chat"
               >
-                <PlusIcon className="size-3 text-muted-foreground" />
+                <Plus size={12} className="text-muted-foreground" />
               </button>
             )}
           </>

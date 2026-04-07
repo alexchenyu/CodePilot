@@ -13,60 +13,72 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { HugeiconsIcon } from "@hugeicons/react";
-import {
-  PlusSignIcon,
-  Loading02Icon,
-  Delete02Icon,
-  PencilEdit01Icon,
-  Tick01Icon,
-  ServerStack01Icon,
-  Cancel01Icon,
-} from "@hugeicons/core-free-icons";
+import { SpinnerGap, PencilSimple, Stethoscope } from "@/components/ui/icon";
 import { ProviderForm } from "./ProviderForm";
+import { ProviderDoctorDialog } from "./ProviderDoctorDialog";
 import type { ProviderFormData } from "./ProviderForm";
-import type { ApiProvider } from "@/types";
+import { PresetConnectDialog } from "./PresetConnectDialog";
+import {
+  QUICK_PRESETS,
+  GEMINI_IMAGE_MODELS,
+  getGeminiImageModel,
+  getProviderIcon,
+  findMatchingPreset,
+  type QuickPreset,
+} from "./provider-presets";
+import type { ApiProvider, ProviderModelGroup } from "@/types";
+import { useTranslation } from "@/hooks/useTranslation";
+import type { TranslationKey } from "@/i18n";
+import Anthropic from "@lobehub/icons/es/Anthropic";
+import { ProviderOptionsSection } from "./ProviderOptionsSection";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
-const QUICK_PRESETS = [
-  { name: "Anthropic", provider_type: "anthropic", base_url: "https://api.anthropic.com" },
-  { name: "OpenRouter", provider_type: "openrouter", base_url: "https://openrouter.ai/api" },
-  { name: "GLM (CN)", provider_type: "custom", base_url: "https://open.bigmodel.cn/api/anthropic", extra_env: '{"API_TIMEOUT_MS":"3000000","ANTHROPIC_API_KEY":""}' },
-  { name: "GLM (Global)", provider_type: "custom", base_url: "https://api.z.ai/api/anthropic", extra_env: '{"API_TIMEOUT_MS":"3000000","ANTHROPIC_API_KEY":""}' },
-  { name: "Kimi Coding Plan", provider_type: "custom", base_url: "https://api.kimi.com/coding/", extra_env: '{"ANTHROPIC_AUTH_TOKEN":""}' },
-  { name: "Moonshot", provider_type: "custom", base_url: "https://api.moonshot.cn/anthropic", extra_env: '{"ANTHROPIC_API_KEY":""}' },
-  { name: "MiniMax (CN)", provider_type: "custom", base_url: "https://api.minimaxi.com/anthropic", extra_env: '{"API_TIMEOUT_MS":"3000000","CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1","ANTHROPIC_API_KEY":""}' },
-  { name: "MiniMax (Global)", provider_type: "custom", base_url: "https://api.minimax.io/anthropic", extra_env: '{"API_TIMEOUT_MS":"3000000","CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1","ANTHROPIC_API_KEY":""}' },
-  { name: "AWS Bedrock", provider_type: "bedrock", base_url: "" },
-  { name: "Google Vertex", provider_type: "vertex", base_url: "" },
-  { name: "LiteLLM", provider_type: "custom", base_url: "http://localhost:4000" },
-];
+// ---------------------------------------------------------------------------
+// Main component
+// ---------------------------------------------------------------------------
 
 export function ProviderManager() {
   const [providers, setProviders] = useState<ApiProvider[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [envDetected, setEnvDetected] = useState<Record<string, string>>({});
+  const { t } = useTranslation();
+  const isZh = t('nav.chats') === '对话';
 
-  // Form dialog state
+  // Edit dialog state — fallback ProviderForm for providers that don't match any preset
   const [formOpen, setFormOpen] = useState(false);
-  const [formMode, setFormMode] = useState<"create" | "edit">("create");
   const [editingProvider, setEditingProvider] = useState<ApiProvider | null>(null);
-  const [initialPreset, setInitialPreset] = useState<{ name: string; provider_type: string; base_url: string } | null>(null);
+
+  // Preset connect/edit dialog state
+  const [connectPreset, setConnectPreset] = useState<QuickPreset | null>(null);
+  const [connectDialogOpen, setConnectDialogOpen] = useState(false);
+  const [presetEditProvider, setPresetEditProvider] = useState<ApiProvider | null>(null);
 
   // Delete confirmation state
   const [deleteTarget, setDeleteTarget] = useState<ApiProvider | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  // Activating state
-  const [activatingId, setActivatingId] = useState<string | null>(null);
+  // Doctor dialog state
+  const [doctorOpen, setDoctorOpen] = useState(false);
+
+  // Global default model state
+  const [providerGroups, setProviderGroups] = useState<ProviderModelGroup[]>([]);
+  const [globalDefaultModel, setGlobalDefaultModel] = useState('');
+  const [globalDefaultProvider, setGlobalDefaultProvider] = useState('');
 
   const fetchProviders = useCallback(async () => {
     try {
       setError(null);
       const res = await fetch("/api/providers");
-      if (!res.ok) {
-        throw new Error("Failed to load providers");
-      }
+      if (!res.ok) throw new Error("Failed to load providers");
       const data = await res.json();
       setProviders(data.providers || []);
       setEnvDetected(data.env_detected || {});
@@ -77,146 +89,170 @@ export function ProviderManager() {
     }
   }, []);
 
+  useEffect(() => { fetchProviders(); }, [fetchProviders]);
+
+  // Fetch all provider models for the global default model selector
+  const fetchModels = useCallback(() => {
+    fetch('/api/providers/models')
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data?.groups) setProviderGroups(data.groups);
+      })
+      .catch(() => {});
+    // Load current global default model
+    fetch('/api/providers/options?providerId=__global__')
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data?.options?.default_model) {
+          setGlobalDefaultModel(data.options.default_model);
+          setGlobalDefaultProvider(data.options.default_model_provider || '');
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   useEffect(() => {
-    fetchProviders();
-  }, [fetchProviders]);
-
-  const handleAdd = () => {
-    setFormMode("create");
-    setEditingProvider(null);
-    setInitialPreset(null);
-    setFormOpen(true);
-  };
-
-  const handlePresetAdd = (preset: typeof QUICK_PRESETS[number]) => {
-    setFormMode("create");
-    setEditingProvider(null);
-    setInitialPreset(preset);
-    setFormOpen(true);
-  };
+    fetchModels();
+    const handler = () => fetchModels();
+    window.addEventListener('provider-changed', handler);
+    return () => window.removeEventListener('provider-changed', handler);
+  }, [fetchModels]);
 
   const handleEdit = (provider: ApiProvider) => {
-    setFormMode("edit");
-    setEditingProvider(provider);
-    setInitialPreset(null);
-    setFormOpen(true);
-  };
-
-  const handleSave = async (data: ProviderFormData) => {
-    if (formMode === "edit" && editingProvider) {
-      const res = await fetch(`/api/providers/${editingProvider.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
-      });
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || "Failed to update provider");
-      }
-      const result = await res.json();
-      setProviders((prev) =>
-        prev.map((p) => (p.id === editingProvider.id ? result.provider : p))
-      );
+    // Try to match provider to a quick preset for a cleaner edit experience
+    const matchedPreset = findMatchingPreset(provider);
+    if (matchedPreset) {
+      // Clear stale generic-form state to prevent handleEditSave picking the wrong target
+      setEditingProvider(null);
+      setConnectPreset(matchedPreset);
+      setPresetEditProvider(provider);
+      setConnectDialogOpen(true);
     } else {
-      const res = await fetch("/api/providers", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
-      });
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || "Failed to create provider");
-      }
-      const result = await res.json();
-      setProviders((prev) => [...prev, result.provider]);
+      // Clear stale preset-edit state
+      setPresetEditProvider(null);
+      setEditingProvider(provider);
+      setFormOpen(true);
     }
   };
 
-  const handleDelete = async () => {
+  const handleEditSave = async (data: ProviderFormData) => {
+    const target = presetEditProvider || editingProvider;
+    if (!target) return;
+    const res = await fetch(`/api/providers/${target.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || "Failed to update provider");
+    }
+    const result = await res.json();
+    setProviders((prev) => prev.map((p) => (p.id === target.id ? result.provider : p)));
+    window.dispatchEvent(new Event("provider-changed"));
+  };
+
+  const handlePresetAdd = async (data: ProviderFormData) => {
+    const res = await fetch("/api/providers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || "Failed to create provider");
+    }
+    const result = await res.json();
+    const newProvider: ApiProvider = result.provider;
+    setProviders((prev) => [...prev, newProvider]);
+
+    window.dispatchEvent(new Event("provider-changed"));
+  };
+
+  const handleOpenPresetDialog = (preset: QuickPreset) => {
+    setConnectPreset(preset);
+    setPresetEditProvider(null); // ensure create mode
+    setConnectDialogOpen(true);
+  };
+
+  const handleDisconnect = async () => {
     if (!deleteTarget) return;
     setDeleting(true);
     try {
-      const res = await fetch(`/api/providers/${deleteTarget.id}`, {
-        method: "DELETE",
-      });
+      const res = await fetch(`/api/providers/${deleteTarget.id}`, { method: "DELETE" });
       if (res.ok) {
         setProviders((prev) => prev.filter((p) => p.id !== deleteTarget.id));
+        window.dispatchEvent(new Event("provider-changed"));
       }
-    } catch {
-      // ignore
-    } finally {
+    } catch { /* ignore */ } finally {
       setDeleting(false);
       setDeleteTarget(null);
     }
   };
 
-  const handleActivate = async (provider: ApiProvider) => {
-    setActivatingId(provider.id);
+  const handleImageModelChange = useCallback(async (provider: ApiProvider, model: string) => {
     try {
-      const res = await fetch(`/api/providers/${provider.id}/activate`, {
-        method: "POST",
+      const env = JSON.parse(provider.extra_env || '{}');
+      env.GEMINI_IMAGE_MODEL = model;
+      const newExtraEnv = JSON.stringify(env);
+      const res = await fetch(`/api/providers/${provider.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: provider.name,
+          provider_type: provider.provider_type,
+          base_url: provider.base_url,
+          api_key: provider.api_key,
+          extra_env: newExtraEnv,
+          notes: provider.notes,
+        }),
       });
       if (res.ok) {
-        // Mark the activated provider as active, deactivate others
-        setProviders((prev) =>
-          prev.map((p) => ({
-            ...p,
-            is_active: p.id === provider.id ? 1 : 0,
-          }))
-        );
+        const result = await res.json();
+        setProviders(prev => prev.map(p => p.id === provider.id ? result.provider : p));
+        window.dispatchEvent(new Event('provider-changed'));
       }
-    } catch {
-      // ignore
-    } finally {
-      setActivatingId(null);
-    }
-  };
-
-  const handleDeactivate = async (provider: ApiProvider) => {
-    setActivatingId(provider.id);
-    try {
-      const res = await fetch(`/api/providers/${provider.id}/activate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ active: false }),
-      });
-      if (res.ok) {
-        setProviders((prev) =>
-          prev.map((p) => ({ ...p, is_active: 0 }))
-        );
-      }
-    } catch {
-      // ignore
-    } finally {
-      setActivatingId(null);
-    }
-  };
+    } catch { /* ignore */ }
+  }, []);
 
   const sorted = [...providers].sort((a, b) => a.sort_order - b.sort_order);
 
-  return (
-    <div className="rounded-lg border border-border/50 p-4 space-y-4">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <div className="flex items-center gap-2">
-            <h3 className="text-sm font-medium">API Providers</h3>
-            {providers.length > 0 && (
-              <span className="text-xs text-muted-foreground">
-                ({providers.length})
-              </span>
-            )}
-          </div>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            Manage API providers for Cursor Agent. The active provider will be used for all sessions.
-          </p>
-        </div>
-        <Button size="sm" className="gap-1" onClick={handleAdd}>
-          <HugeiconsIcon icon={PlusSignIcon} className="h-3.5 w-3.5" />
-          Add Provider
-        </Button>
-      </div>
+  // Save global default model — also syncs default_provider_id for backend consumers
+  const handleGlobalDefaultModelChange = useCallback(async (compositeValue: string) => {
+    if (compositeValue === '__auto__') {
+      setGlobalDefaultModel('');
+      setGlobalDefaultProvider('');
+      // Clear both global default model AND legacy default_provider_id in one call
+      await fetch('/api/providers/options', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          providerId: '__global__',
+          options: { default_model: '', default_model_provider: '', legacy_default_provider_id: '' },
+        }),
+      }).catch(() => {});
+    } else {
+      // compositeValue format: "providerId::modelValue"
+      const sepIdx = compositeValue.indexOf('::');
+      const pid = compositeValue.slice(0, sepIdx);
+      const model = compositeValue.slice(sepIdx + 2);
+      setGlobalDefaultModel(model);
+      setGlobalDefaultProvider(pid);
+      // Write global default model + sync legacy default_provider_id in one call
+      await fetch('/api/providers/options', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          providerId: '__global__',
+          options: { default_model: model, default_model_provider: pid, legacy_default_provider_id: pid },
+        }),
+      }).catch(() => {});
+    }
+    window.dispatchEvent(new Event('provider-changed'));
+  }, []);
 
+  return (
+    <div className="space-y-6">
       {/* Error */}
       {error && (
         <div className="rounded-md bg-destructive/10 p-3">
@@ -224,230 +260,301 @@ export function ProviderManager() {
         </div>
       )}
 
-      {/* Environment variable detection banner */}
-      {!loading && Object.keys(envDetected).length > 0 && (() => {
-        const hasActiveProvider = providers.some(p => p.is_active === 1);
-        return (
-          <div className={`rounded-md border p-3 ${
-            hasActiveProvider
-              ? "border-border/50 bg-muted/30"
-              : "border-green-500/30 bg-green-500/5"
-          }`}>
-            <div className="flex items-center gap-2 mb-1">
-              <p className={`text-xs font-medium ${
-                hasActiveProvider
-                  ? "text-muted-foreground"
-                  : "text-green-700 dark:text-green-400"
-              }`}>
-                Environment variables detected
-              </p>
-              {hasActiveProvider ? (
-                <Badge variant="secondary" className="text-[10px] px-1.5 py-0 text-muted-foreground">
-                  Overridden
-                </Badge>
-              ) : (
-                <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-green-600 dark:text-green-400 border-green-500/30">
-                  In use
-                </Badge>
-              )}
-            </div>
-            <div className="space-y-0.5">
-              {Object.entries(envDetected).map(([key, value]) => (
-                <p key={key} className={`text-xs font-mono ${
-                  hasActiveProvider ? "text-muted-foreground/60 line-through" : "text-muted-foreground"
-                }`}>
-                  {key}={value}
-                </p>
-              ))}
-            </div>
-            {hasActiveProvider && (
-              <p className="text-xs text-muted-foreground mt-1.5">
-                Active provider takes priority. Disable it to use environment variables.
-              </p>
-            )}
+      {/* ─── Section 0: Troubleshooting + Default Model ─── */}
+      <div className="rounded-lg border border-border/50 p-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-medium">{isZh ? '连接诊断' : 'Connection Diagnostics'}</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              {isZh
+                ? '检查 CLI、认证、模型兼容性和网络连接是否正常'
+                : 'Check CLI, auth, model compatibility, and network connectivity'}
+            </p>
           </div>
-        );
-      })()}
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1.5 shrink-0"
+            onClick={() => setDoctorOpen(true)}
+          >
+            <Stethoscope size={14} />
+            {isZh ? '运行诊断' : 'Run Diagnostics'}
+          </Button>
+        </div>
+
+        {/* Divider */}
+        <div className="border-t border-border/30 my-3" />
+
+        {/* Global default model */}
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-medium">{t('settings.defaultModel' as TranslationKey)}</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              {t('settings.defaultModelDesc' as TranslationKey)}
+            </p>
+          </div>
+          {providerGroups.length > 0 && (
+            <Select
+              value={globalDefaultModel ? `${globalDefaultProvider}::${globalDefaultModel}` : '__auto__'}
+              onValueChange={handleGlobalDefaultModelChange}
+            >
+              <SelectTrigger className="w-[160px] h-7 text-[11px] shrink-0">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__auto__">
+                  {t('settings.defaultModelAuto' as TranslationKey)}
+                </SelectItem>
+                {providerGroups.map(group => (
+                  <SelectGroup key={group.provider_id}>
+                    <SelectLabel className="text-[10px] text-muted-foreground">
+                      {group.provider_name}
+                    </SelectLabel>
+                    {group.models.map(m => (
+                      <SelectItem
+                        key={`${group.provider_id}::${m.value}`}
+                        value={`${group.provider_id}::${m.value}`}
+                      >
+                        {m.label}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+        </div>
+      </div>
 
       {/* Loading */}
       {loading && (
         <div className="flex items-center justify-center gap-2 py-8 text-muted-foreground">
-          <HugeiconsIcon icon={Loading02Icon} className="h-4 w-4 animate-spin" />
-          <p className="text-sm">Loading providers...</p>
+          <SpinnerGap size={16} className="animate-spin" />
+          <p className="text-sm">{t('common.loading')}</p>
         </div>
       )}
 
-      {/* Empty state */}
-      {!loading && providers.length === 0 && (
-        <div className="flex flex-col items-center gap-3 py-8 text-muted-foreground">
-          <HugeiconsIcon icon={ServerStack01Icon} className="h-10 w-10 opacity-30" />
-          <div className="text-center">
-            <p className="text-sm font-medium">No providers configured</p>
-            <p className="text-xs mt-0.5">
-              {Object.keys(envDetected).length > 0
-                ? "Using environment variables. Add a provider below to override."
-                : "Add a provider to use a custom API endpoint with Cursor Agent."}
+      {/* ─── Section 1: Connected Providers ─── */}
+      {!loading && (
+        <div className="rounded-lg border border-border/50 p-4 space-y-2">
+          <h3 className="text-sm font-medium mb-1">{t('provider.connectedProviders')}</h3>
+
+          {/* Claude Code default config */}
+          <div className="border-b border-border/30 pb-2">
+            <div className="flex items-center gap-3 py-2.5 px-1">
+              <div className="shrink-0 w-[22px] flex justify-center">
+                <Anthropic size={18} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium">Claude Code</span>
+                  {Object.keys(envDetected).length > 0 && (
+                    <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-status-success-foreground border-status-success-border">
+                      ENV
+                    </Badge>
+                  )}
+                </div>
+              </div>
+            </div>
+            <p className="text-[11px] text-muted-foreground ml-[34px] leading-relaxed">
+              {t('provider.ccSwitchHint')}
             </p>
+            <ProviderOptionsSection providerId="env" showThinkingOptions />
           </div>
-          {/* Quick preset buttons */}
-          <div className="flex flex-wrap items-center justify-center gap-1.5 mt-2 max-w-md">
-            {QUICK_PRESETS.map((preset) => (
-              <Button
-                key={preset.name}
-                variant="outline"
-                size="xs"
-                className="gap-1"
-                onClick={() => handlePresetAdd(preset)}
-              >
-                <HugeiconsIcon icon={PlusSignIcon} className="h-3 w-3" />
-                {preset.name}
-              </Button>
-            ))}
-          </div>
-        </div>
-      )}
 
-      {/* Provider list */}
-      {!loading && sorted.length > 0 && (
-        <div className="space-y-2 max-h-[400px] overflow-y-auto min-h-0">
-          {sorted.map((provider) => {
-            const isActive = provider.is_active === 1;
-            const isActivating = activatingId === provider.id;
-
-            return (
+          {/* Connected provider list */}
+          {sorted.length > 0 ? (
+            sorted.map((provider) => (
               <div
                 key={provider.id}
-                className={`rounded-lg border p-3 transition-colors ${
-                  isActive
-                    ? "border-border bg-green-500/5"
-                    : "border-border/50 hover:border-border"
-                }`}
+                className="py-2.5 px-1 border-b border-border/30 last:border-b-0"
               >
-                <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="shrink-0 w-[22px] flex justify-center">
+                    {getProviderIcon(provider.name, provider.base_url)}
+                  </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium truncate">
-                        {provider.name}
-                      </span>
+                      <span className="text-sm font-medium truncate">{provider.name}</span>
                       <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
-                        {provider.provider_type}
+                        {provider.api_key
+                          ? (findMatchingPreset(provider)?.authStyle === 'auth_token' ? "Auth Token" : "API Key")
+                          : t('provider.configured')}
                       </Badge>
-                      {isActive && (
-                        <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-green-600 dark:text-green-400 border-green-500/30">
-                          Active
-                        </Badge>
-                      )}
                     </div>
-                    {provider.base_url && (
-                      <p className="text-xs text-muted-foreground font-mono truncate mt-0.5">
-                        {provider.base_url}
-                      </p>
-                    )}
                   </div>
-
-                  {/* Actions */}
                   <div className="flex items-center gap-1 shrink-0">
-                    {isActive ? (
-                      <Button
-                        variant="ghost"
-                        size="xs"
-                        disabled={isActivating}
-                        onClick={() => handleDeactivate(provider)}
-                        className="gap-1 text-muted-foreground"
-                      >
-                        {isActivating ? (
-                          <HugeiconsIcon icon={Loading02Icon} className="h-3 w-3 animate-spin" />
-                        ) : (
-                          <HugeiconsIcon icon={Cancel01Icon} className="h-3 w-3" />
-                        )}
-                        Disable
-                      </Button>
-                    ) : (
-                      <Button
-                        variant="ghost"
-                        size="xs"
-                        disabled={isActivating}
-                        onClick={() => handleActivate(provider)}
-                        className="gap-1"
-                      >
-                        {isActivating ? (
-                          <HugeiconsIcon icon={Loading02Icon} className="h-3 w-3 animate-spin" />
-                        ) : (
-                          <HugeiconsIcon icon={Tick01Icon} className="h-3 w-3" />
-                        )}
-                        Apply
-                      </Button>
-                    )}
                     <Button
                       variant="ghost"
                       size="icon-xs"
                       title="Edit"
                       onClick={() => handleEdit(provider)}
                     >
-                      <HugeiconsIcon icon={PencilEdit01Icon} className="h-3 w-3" />
+                      <PencilSimple size={12} />
                     </Button>
                     <Button
                       variant="ghost"
-                      size="icon-xs"
-                      title="Delete"
+                      size="xs"
+                      className="text-destructive hover:text-destructive"
                       onClick={() => setDeleteTarget(provider)}
                     >
-                      <HugeiconsIcon icon={Delete02Icon} className="h-3 w-3 text-destructive" />
+                      {t('provider.disconnect')}
                     </Button>
                   </div>
                 </div>
+                {/* Provider options — thinking/1M for Anthropic-official only */}
+                {provider.provider_type !== 'gemini-image' && provider.base_url === 'https://api.anthropic.com' && (
+                  <ProviderOptionsSection
+                    providerId={provider.id}
+                    showThinkingOptions
+                  />
+                )}
+                {/* Gemini Image model selector — capsule buttons */}
+                {provider.provider_type === 'gemini-image' && (
+                  <div className="ml-[34px] mt-2 flex items-center gap-1.5">
+                    <span className="text-[11px] text-muted-foreground mr-1">{isZh ? '模型' : 'Model'}:</span>
+                    {GEMINI_IMAGE_MODELS.map((m) => {
+                      const isActive = getGeminiImageModel(provider) === m.value;
+                      return (
+                        <Button
+                          key={m.value}
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleImageModelChange(provider, m.value)}
+                          className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-medium border h-auto ${
+                            isActive
+                              ? 'bg-primary/10 text-primary border-primary/30'
+                              : 'text-muted-foreground border-border/60 hover:text-foreground hover:border-foreground/30 hover:bg-accent/50'
+                          }`}
+                        >
+                          {m.label}
+                        </Button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
-            );
-          })}
+            ))
+          ) : (
+            Object.keys(envDetected).length === 0 && (
+              <p className="text-xs text-muted-foreground py-4 text-center">
+                {t('provider.noConnected')}
+              </p>
+            )
+          )}
         </div>
       )}
 
-      {/* Quick presets row (when providers exist) */}
-      {!loading && providers.length > 0 && (
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <span className="text-xs text-muted-foreground mr-1">Quick add:</span>
-          {QUICK_PRESETS.map((preset) => (
-            <Button
-              key={preset.name}
-              variant="outline"
-              size="xs"
-              className="gap-1 text-[11px]"
-              onClick={() => handlePresetAdd(preset)}
-            >
-              <HugeiconsIcon icon={PlusSignIcon} className="h-2.5 w-2.5" />
-              {preset.name}
-            </Button>
-          ))}
+      {/* ─── Section 2: Add Provider (Quick Presets) ─── */}
+      {!loading && (
+        <div className="rounded-lg border border-border/50 p-4">
+          <h3 className="text-sm font-medium mb-1">{t('provider.addProviderSection')}</h3>
+          <p className="text-xs text-muted-foreground mb-3">
+            {t('provider.addProviderDesc')}
+          </p>
+
+          {/* Chat Providers */}
+          <div className="mb-1">
+            <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
+              {t('provider.chatProviders')}
+            </h4>
+            {QUICK_PRESETS.filter((p) => p.category !== "media").map((preset) => (
+              <div
+                key={preset.key}
+                className="flex items-center gap-3 py-2.5 px-1 border-b border-border/30 last:border-b-0"
+              >
+                <div className="shrink-0 w-[22px] flex justify-center">{preset.icon}</div>
+                <div className="flex-1 min-w-0">
+                  <span className="text-sm font-medium">{preset.name}</span>
+                  <p className="text-xs text-muted-foreground truncate">
+                    {isZh ? preset.descriptionZh : preset.description}
+                  </p>
+                </div>
+                <Button
+                  variant="outline"
+                  size="xs"
+                  className="shrink-0 gap-1"
+                  onClick={() => handleOpenPresetDialog(preset)}
+                >
+                  + {t('provider.connect')}
+                </Button>
+              </div>
+            ))}
+          </div>
+
+          {/* Media Providers */}
+          <div className="mt-4 pt-3 border-t border-border/30">
+            <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
+              {t('provider.mediaProviders')}
+            </h4>
+            {QUICK_PRESETS.filter((p) => p.category === "media").map((preset) => (
+              <div
+                key={preset.key}
+                className="flex items-center gap-3 py-2.5 px-1 border-b border-border/30 last:border-b-0"
+              >
+                <div className="shrink-0 w-[22px] flex justify-center">{preset.icon}</div>
+                <div className="flex-1 min-w-0">
+                  <span className="text-sm font-medium">{preset.name}</span>
+                  <p className="text-xs text-muted-foreground truncate">
+                    {isZh ? preset.descriptionZh : preset.description}
+                  </p>
+                </div>
+                <Button
+                  variant="outline"
+                  size="xs"
+                  className="shrink-0 gap-1"
+                  onClick={() => handleOpenPresetDialog(preset)}
+                >
+                  + {t('provider.connect')}
+                </Button>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
-      {/* Form dialog */}
+      {/* Edit dialog (full form for editing existing providers) */}
       <ProviderForm
         open={formOpen}
         onOpenChange={setFormOpen}
-        mode={formMode}
+        mode="edit"
         provider={editingProvider}
-        onSave={handleSave}
-        initialPreset={initialPreset}
+        onSave={handleEditSave}
+        initialPreset={null}
       />
 
-      {/* Delete confirmation */}
+      {/* Preset connect/edit dialog */}
+      <PresetConnectDialog
+        preset={connectPreset}
+        open={connectDialogOpen}
+        onOpenChange={(open) => {
+          setConnectDialogOpen(open);
+          if (!open) setPresetEditProvider(null);
+        }}
+        onSave={presetEditProvider ? handleEditSave : handlePresetAdd}
+        editProvider={presetEditProvider}
+      />
+
+      {/* Provider Doctor dialog */}
+      <ProviderDoctorDialog open={doctorOpen} onOpenChange={setDoctorOpen} />
+
+      {/* Disconnect confirmation */}
       <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete Provider</AlertDialogTitle>
+            <AlertDialogTitle>{t('provider.disconnectProvider')}</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete &quot;{deleteTarget?.name}&quot;? This action cannot be undone.
+              {t('provider.disconnectConfirm', { name: deleteTarget?.name ?? '' })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={deleting}>{t('common.cancel')}</AlertDialogCancel>
             <AlertDialogAction
-              onClick={handleDelete}
+              onClick={handleDisconnect}
               disabled={deleting}
               className="bg-destructive text-white hover:bg-destructive/90"
             >
-              {deleting ? "Deleting..." : "Delete"}
+              {deleting ? t('provider.disconnecting') : t('provider.disconnect')}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

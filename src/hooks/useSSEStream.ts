@@ -1,5 +1,5 @@
 import { useRef, useCallback } from 'react';
-import type { SSEEvent, TokenUsage, PermissionRequestEvent } from '@/types';
+import type { SSEEvent, TokenUsage, PermissionRequestEvent, MediaBlock } from '@/types';
 
 interface ToolUseInfo {
   id: string;
@@ -10,11 +10,12 @@ interface ToolUseInfo {
 interface ToolResultInfo {
   tool_use_id: string;
   content: string;
+  is_error?: boolean;
+  media?: MediaBlock[];
 }
 
 export interface SSECallbacks {
   onText: (accumulated: string) => void;
-  onThinking?: (accumulated: string) => void;
   onToolUse: (tool: ToolUseInfo) => void;
   onToolResult: (result: ToolResultInfo) => void;
   onToolOutput: (data: string) => void;
@@ -23,15 +24,26 @@ export interface SSECallbacks {
   onResult: (usage: TokenUsage | null) => void;
   onPermissionRequest: (data: PermissionRequestEvent) => void;
   onToolTimeout: (toolName: string, elapsedSeconds: number) => void;
+  onModeChanged: (mode: string) => void;
+  onTaskUpdate: (sessionId: string) => void;
+  onRewindPoint: (sdkUserMessageId: string) => void;
+  onThinking?: (delta: string) => void;
+  onKeepAlive: () => void;
   onError: (accumulated: string) => void;
+  onInitMeta?: (meta: {
+    tools?: unknown;
+    slash_commands?: unknown;
+    skills?: unknown;
+    plugins?: Array<{ name: string; path: string }>;
+    mcp_servers?: unknown;
+    output_style?: string;
+  }) => void;
 }
 
 /**
  * Parse a single SSE line (after stripping "data: " prefix) and dispatch
  * to the appropriate callback.  Returns the updated accumulated text.
  */
-let thinkingAccumulated = '';
-
 function handleSSEEvent(
   event: SSEEvent,
   accumulated: string,
@@ -45,8 +57,7 @@ function handleSSEEvent(
     }
 
     case 'thinking': {
-      thinkingAccumulated += event.data;
-      callbacks.onThinking?.(thinkingAccumulated);
+      callbacks.onThinking?.(event.data);
       return accumulated;
     }
 
@@ -70,6 +81,10 @@ function handleSSEEvent(
         callbacks.onToolResult({
           tool_use_id: resultData.tool_use_id,
           content: resultData.content,
+          ...(resultData.is_error ? { is_error: true } : {}),
+          ...(Array.isArray(resultData.media) && resultData.media.length > 0
+            ? { media: resultData.media }
+            : {}),
         });
       } catch {
         // skip malformed tool_result data
@@ -94,8 +109,20 @@ function handleSSEEvent(
     case 'status': {
       try {
         const statusData = JSON.parse(event.data);
+        // Skip internal-only status events (e.g. resume fallback notifications)
+        if (statusData._internal) {
+          return accumulated;
+        }
         if (statusData.session_id) {
-          callbacks.onStatus(`Connected (${statusData.model || 'agent'})`);
+          callbacks.onStatus(`Connected (${statusData.requested_model || statusData.model || 'claude'})`);
+          callbacks.onInitMeta?.({
+            tools: statusData.tools,
+            slash_commands: statusData.slash_commands,
+            skills: statusData.skills,
+            plugins: statusData.plugins,
+            mcp_servers: statusData.mcp_servers,
+            output_style: statusData.output_style,
+          });
         } else if (statusData.notification) {
           callbacks.onStatus(statusData.message || statusData.title || undefined);
         } else {
@@ -138,8 +165,77 @@ function handleSSEEvent(
       return accumulated;
     }
 
+    case 'mode_changed': {
+      callbacks.onModeChanged(event.data);
+      return accumulated;
+    }
+
+    case 'task_update': {
+      try {
+        const taskData = JSON.parse(event.data);
+        callbacks.onTaskUpdate(taskData.session_id);
+      } catch {
+        // skip malformed task_update data
+      }
+      return accumulated;
+    }
+
+    case 'rewind_point': {
+      try {
+        const rpData = JSON.parse(event.data);
+        if (rpData.userMessageId) {
+          callbacks.onRewindPoint(rpData.userMessageId);
+        }
+      } catch {
+        // skip malformed rewind_point data
+      }
+      return accumulated;
+    }
+
+    case 'keep_alive': {
+      callbacks.onKeepAlive();
+      return accumulated;
+    }
+
     case 'error': {
-      const next = accumulated + '\n\n**Error:** ' + event.data;
+      // Try to parse structured error JSON from error-classifier
+      let errorDisplay: string;
+      try {
+        const parsed = JSON.parse(event.data);
+        if (parsed.category && parsed.userMessage) {
+          // Structured error from classifier
+          errorDisplay = parsed.userMessage;
+          if (parsed.actionHint) {
+            errorDisplay += `\n\n**What to do:** ${parsed.actionHint}`;
+          }
+          if (parsed.details) {
+            errorDisplay += `\n\nDetails: ${parsed.details}`;
+          }
+          // Render recovery actions as markdown links
+          if (parsed.recoveryActions && parsed.recoveryActions.length > 0) {
+            const links: string[] = [];
+            for (const a of parsed.recoveryActions as Array<{ label: string; url?: string; action?: string }>) {
+              if (a.url) {
+                links.push(`[${a.label}](${a.url})`);
+              } else if (a.action === 'open_settings') {
+                links.push(`[${a.label}](/settings#providers)`);
+              } else if (a.action === 'new_conversation') {
+                links.push(`[${a.label}](/chat)`);
+              }
+              // 'retry' is handled by the retryable flag, not as a link
+            }
+            if (links.length > 0) {
+              errorDisplay += '\n\n' + links.join(' · ');
+            }
+          }
+        } else {
+          errorDisplay = event.data;
+        }
+      } catch {
+        // Plain text error (backward compatible)
+        errorDisplay = event.data;
+      }
+      const next = accumulated + '\n\n**Error:** ' + errorDisplay;
       callbacks.onError(next);
       return next;
     }
@@ -165,7 +261,6 @@ export async function consumeSSEStream(
   let buffer = '';
   let accumulated = '';
   let tokenUsage: TokenUsage | null = null;
-  thinkingAccumulated = ''; // Reset thinking state for new stream
 
   const wrappedCallbacks: SSECallbacks = {
     ...callbacks,
@@ -215,7 +310,6 @@ export function useSSEStream() {
       // Proxy through ref so callers always hit the latest callbacks
       const proxied: SSECallbacks = {
         onText: (a) => callbacksRef.current?.onText(a),
-        onThinking: (a) => callbacksRef.current?.onThinking?.(a),
         onToolUse: (t) => callbacksRef.current?.onToolUse(t),
         onToolResult: (r) => callbacksRef.current?.onToolResult(r),
         onToolOutput: (d) => callbacksRef.current?.onToolOutput(d),
@@ -224,7 +318,13 @@ export function useSSEStream() {
         onResult: (u) => callbacksRef.current?.onResult(u),
         onPermissionRequest: (d) => callbacksRef.current?.onPermissionRequest(d),
         onToolTimeout: (n, s) => callbacksRef.current?.onToolTimeout(n, s),
+        onModeChanged: (m) => callbacksRef.current?.onModeChanged(m),
+        onTaskUpdate: (s) => callbacksRef.current?.onTaskUpdate(s),
+        onRewindPoint: (id) => callbacksRef.current?.onRewindPoint(id),
+        onThinking: (d) => callbacksRef.current?.onThinking?.(d),
+        onKeepAlive: () => callbacksRef.current?.onKeepAlive(),
         onError: (a) => callbacksRef.current?.onError(a),
+        onInitMeta: (m) => callbacksRef.current?.onInitMeta?.(m),
       };
 
       return consumeSSEStream(reader, proxied);

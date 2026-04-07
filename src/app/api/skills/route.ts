@@ -3,12 +3,14 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import crypto from "crypto";
+import type { SkillKind } from "@/types";
 
 interface SkillFile {
   name: string;
   description: string;
   content: string;
-  source: "global" | "project" | "plugin" | "installed";
+  source: "global" | "project" | "plugin" | "installed" | "sdk";
+  kind: SkillKind;
   installedSource?: "agents" | "claude";
   filePath: string;
 }
@@ -24,28 +26,51 @@ function getProjectCommandsDir(cwd?: string): string {
   return path.join(cwd || process.cwd(), ".claude", "commands");
 }
 
+function getProjectSkillsDir(cwd?: string): string {
+  return path.join(cwd || process.cwd(), ".claude", "skills");
+}
+
 function getPluginCommandsDirs(): string[] {
   const dirs: string[] = [];
-  const marketplacesDir = path.join(os.homedir(), ".claude", "plugins", "marketplaces");
-  if (!fs.existsSync(marketplacesDir)) return dirs;
+  const pluginsRoot = path.join(os.homedir(), ".claude", "plugins");
 
-  try {
-    // Scan marketplaces -> each marketplace -> plugins -> each plugin -> commands
-    const marketplaces = fs.readdirSync(marketplacesDir);
-    for (const marketplace of marketplaces) {
-      const pluginsDir = path.join(marketplacesDir, marketplace, "plugins");
-      if (!fs.existsSync(pluginsDir)) continue;
-      const plugins = fs.readdirSync(pluginsDir);
-      for (const plugin of plugins) {
-        const commandsDir = path.join(pluginsDir, plugin, "commands");
+  // Scan marketplaces: ~/.claude/plugins/marketplaces/{mkt}/plugins/*/commands
+  const marketplacesDir = path.join(pluginsRoot, "marketplaces");
+  if (fs.existsSync(marketplacesDir)) {
+    try {
+      const marketplaces = fs.readdirSync(marketplacesDir);
+      for (const marketplace of marketplaces) {
+        const pluginsDir = path.join(marketplacesDir, marketplace, "plugins");
+        if (!fs.existsSync(pluginsDir)) continue;
+        const plugins = fs.readdirSync(pluginsDir);
+        for (const plugin of plugins) {
+          const commandsDir = path.join(pluginsDir, plugin, "commands");
+          if (fs.existsSync(commandsDir)) {
+            dirs.push(commandsDir);
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  // Scan external plugins: ~/.claude/plugins/external_plugins/*/commands
+  const externalDir = path.join(pluginsRoot, "external_plugins");
+  if (fs.existsSync(externalDir)) {
+    try {
+      const externals = fs.readdirSync(externalDir);
+      for (const plugin of externals) {
+        const commandsDir = path.join(externalDir, plugin, "commands");
         if (fs.existsSync(commandsDir)) {
           dirs.push(commandsDir);
         }
       }
+    } catch {
+      // ignore
     }
-  } catch {
-    // ignore
   }
+
   return dirs;
 }
 
@@ -55,6 +80,41 @@ function getInstalledSkillsDir(): string {
 
 function getClaudeSkillsDir(): string {
   return path.join(os.homedir(), ".claude", "skills");
+}
+
+/**
+ * Scan project-level skills from .claude/skills/{name}/SKILL.md.
+ * Each subdirectory may contain a SKILL.md with optional YAML front matter.
+ */
+function scanProjectSkills(dir: string): SkillFile[] {
+  const skills: SkillFile[] = [];
+  if (!fs.existsSync(dir)) return skills;
+
+  try {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+      const skillMdPath = path.join(dir, entry.name, "SKILL.md");
+      if (!fs.existsSync(skillMdPath)) continue;
+
+      const content = fs.readFileSync(skillMdPath, "utf-8");
+      const meta = parseSkillFrontMatter(content);
+      const name = meta.name || entry.name;
+      const description = meta.description || `Skill: /${name}`;
+
+      skills.push({
+        name,
+        description,
+        content,
+        source: "project",
+        kind: "agent_skill",
+        filePath: skillMdPath,
+      });
+    }
+  } catch {
+    // ignore read errors
+  }
+  return skills;
 }
 
 function computeContentHash(content: string): string {
@@ -139,6 +199,7 @@ function scanInstalledSkills(
         description,
         content,
         source: "installed",
+        kind: "agent_skill",
         installedSource,
         contentHash,
         filePath: skillMdPath,
@@ -218,7 +279,7 @@ function scanDirectory(
       const description = firstLine.startsWith("#")
         ? firstLine.replace(/^#+\s*/, "")
         : firstLine || `Skill: /${name}`;
-      skills.push({ name, description, content, source, filePath });
+      skills.push({ name, description, content, source, kind: "slash_command", filePath });
     }
   } catch {
     // ignore read errors
@@ -230,6 +291,20 @@ export async function GET(request: NextRequest) {
   try {
     // Accept optional cwd query param for project-level skills
     const cwd = request.nextUrl.searchParams.get("cwd") || undefined;
+
+    // Resolve provider ID from session for correct capability cache lookup.
+    // Falls back to 'env' when no session is specified.
+    const sessionId = request.nextUrl.searchParams.get("sessionId");
+    let providerId = 'env';
+    if (sessionId) {
+      try {
+        const { getSession } = await import('@/lib/db');
+        const session = getSession(sessionId);
+        providerId = session?.provider_id || 'env';
+      } catch {
+        // DB not available, fall back to 'env'
+      }
+    }
     const globalDir = getGlobalCommandsDir();
     const projectDir = getProjectCommandsDir(cwd);
 
@@ -239,6 +314,18 @@ export async function GET(request: NextRequest) {
 
     const globalSkills = scanDirectory(globalDir, "global");
     const projectSkills = scanDirectory(projectDir, "project");
+
+    // Scan project-level skills (.claude/skills/*/SKILL.md)
+    const projectSkillsDir = getProjectSkillsDir(cwd);
+    console.log(`[skills] Scanning project skills: ${projectSkillsDir} (exists: ${fs.existsSync(projectSkillsDir)})`);
+    const projectLevelSkills = scanProjectSkills(projectSkillsDir);
+    console.log(`[skills] Found ${projectLevelSkills.length} project-level skills`);
+
+    // Deduplicate: project commands take priority over project skills with the same name
+    const projectCommandNames = new Set(projectSkills.map((s) => s.name));
+    const dedupedProjectSkills = projectLevelSkills.filter(
+      (s) => !projectCommandNames.has(s.name)
+    );
 
     const agentsSkillsDir = getInstalledSkillsDir();
     const claudeSkillsDir = getClaudeSkillsDir();
@@ -267,8 +354,62 @@ export async function GET(request: NextRequest) {
       pluginSkills.push(...scanDirectory(dir, "plugin"));
     }
 
-    const all = [...globalSkills, ...projectSkills, ...installedSkills, ...pluginSkills];
-    console.log(`[skills] Found: global=${globalSkills.length}, project=${projectSkills.length}, installed=${installedSkills.length}, plugin=${pluginSkills.length}`);
+    // Cross-reference plugin skills with loaded plugins from SDK init meta.
+    // Uses provider-scoped cache so custom providers see their own plugin set.
+    let loadedPluginPaths: Set<string> | null = null;
+    try {
+      const { getCachedPlugins } = await import('@/lib/agent-sdk-capabilities');
+      const loaded = getCachedPlugins(providerId);
+      loadedPluginPaths = new Set(loaded.map(p => p.path));
+    } catch {
+      // SDK capabilities not available
+    }
+
+    // Annotate plugin skills with loaded status
+    const annotatedPluginSkills = pluginSkills.map(skill => ({
+      ...skill,
+      loaded: loadedPluginPaths ? loadedPluginPaths.has(
+        // The skill filePath is inside commands/ — check if any loaded plugin path is a parent
+        (() => {
+          // Walk up from skill filePath to find plugin root
+          let dir = path.dirname(skill.filePath);
+          while (dir && dir !== path.dirname(dir)) {
+            if (loadedPluginPaths!.has(dir)) return dir;
+            dir = path.dirname(dir);
+          }
+          return '';
+        })()
+      ) : false,
+    }));
+
+    const all: Array<SkillFile & { loaded?: boolean }> = [
+      ...globalSkills, ...projectSkills, ...dedupedProjectSkills, ...installedSkills, ...annotatedPluginSkills,
+    ];
+    console.log(`[skills] Found: global=${globalSkills.length}, project=${projectSkills.length}, projectSkills=${dedupedProjectSkills.length}, installed=${installedSkills.length}, plugin=${pluginSkills.length}`);
+
+    // Merge SDK slash commands if available
+    try {
+      const { getCachedCommands } = await import('@/lib/agent-sdk-capabilities');
+      const sdkCommands = getCachedCommands(providerId);
+      if (sdkCommands.length > 0) {
+        const existingNames = new Set(all.map(s => s.name));
+        for (const cmd of sdkCommands) {
+          if (!existingNames.has(cmd.name)) {
+            all.push({
+              name: cmd.name,
+              description: cmd.description || `SDK command: /${cmd.name}`,
+              content: '', // SDK commands don't have local content
+              source: 'sdk',
+              kind: 'sdk_command',
+              filePath: '',
+            });
+          }
+        }
+        console.log(`[skills] Added ${sdkCommands.length} SDK commands (${sdkCommands.filter(c => !existingNames.has(c.name)).length} unique)`);
+      }
+    } catch {
+      // SDK capabilities not available, skip
+    }
 
     return NextResponse.json({ skills: all });
   } catch (error) {
@@ -283,10 +424,11 @@ export async function GET(request: NextRequest) {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { name, content, scope } = body as {
+    const { name, content, scope, cwd } = body as {
       name: string;
       content: string;
       scope: "global" | "project";
+      cwd?: string;
     };
 
     if (!name || typeof name !== "string") {
@@ -306,7 +448,7 @@ export async function POST(request: Request) {
     }
 
     const dir =
-      scope === "project" ? getProjectCommandsDir() : getGlobalCommandsDir();
+      scope === "project" ? getProjectCommandsDir(cwd) : getGlobalCommandsDir();
 
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });

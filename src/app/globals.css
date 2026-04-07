@@ -44,6 +44,23 @@
   --radius-2xl: calc(var(--radius) + 8px);
   --radius-3xl: calc(var(--radius) + 12px);
   --radius-4xl: calc(var(--radius) + 16px);
+  /* Status semantic colors */
+  --color-status-success: var(--status-success);
+  --color-status-success-foreground: var(--status-success-foreground);
+  --color-status-success-muted: var(--status-success-muted);
+  --color-status-success-border: var(--status-success-border);
+  --color-status-warning: var(--status-warning);
+  --color-status-warning-foreground: var(--status-warning-foreground);
+  --color-status-warning-muted: var(--status-warning-muted);
+  --color-status-warning-border: var(--status-warning-border);
+  --color-status-error: var(--status-error);
+  --color-status-error-foreground: var(--status-error-foreground);
+  --color-status-error-muted: var(--status-error-muted);
+  --color-status-error-border: var(--status-error-border);
+  --color-status-info: var(--status-info);
+  --color-status-info-foreground: var(--status-info-foreground);
+  --color-status-info-muted: var(--status-info-muted);
+  --color-status-info-border: var(--status-info-border);
 }
 
 :root {
@@ -79,6 +96,33 @@
   --sidebar-accent-foreground: oklch(0.216 0.006 56.043);
   --sidebar-border: oklch(0.923 0.003 48.717);
   --sidebar-ring: oklch(0.546 0.245 262.881);
+  --user-bubble: oklch(0.22 0.005 250);
+  --user-bubble-foreground: oklch(0.985 0.001 106.423);
+  /* Status semantic tokens */
+  --status-success: oklch(0.527 0.154 150.069);
+  --status-success-foreground: oklch(0.393 0.124 148.697);
+  --status-success-muted: oklch(0.527 0.154 150.069 / 10%);
+  --status-success-border: oklch(0.527 0.154 150.069 / 20%);
+  --status-warning: oklch(0.705 0.213 47.604);
+  --status-warning-foreground: oklch(0.646 0.222 41.116);
+  --status-warning-muted: oklch(0.705 0.213 47.604 / 10%);
+  --status-warning-border: oklch(0.705 0.213 47.604 / 20%);
+  --status-error: oklch(0.577 0.245 27.325);
+  --status-error-foreground: oklch(0.577 0.245 27.325);
+  --status-error-muted: oklch(0.577 0.245 27.325 / 10%);
+  --status-error-border: oklch(0.577 0.245 27.325 / 20%);
+  --status-info: oklch(0.546 0.245 262.881);
+  --status-info-foreground: oklch(0.546 0.245 262.881);
+  --status-info-muted: oklch(0.546 0.245 262.881 / 10%);
+  --status-info-border: oklch(0.546 0.245 262.881 / 20%);
+  /* Terminal / code-block (bash) tokens */
+  --terminal-bg: oklch(0.13 0.004 49.25);
+  --terminal-foreground: oklch(0.87 0.006 106);
+  --terminal-muted: oklch(0.55 0.01 58);
+  --terminal-border: oklch(0.30 0.005 49);
+  --terminal-accent: oklch(0.55 0.17 155);
+  --terminal-hover-bg: oklch(0.25 0.005 49);
+  --terminal-gradient-from: oklch(0.13 0.004 49.25);
 }
 
 .dark {
@@ -113,6 +157,33 @@
   --sidebar-accent-foreground: oklch(0.985 0.001 106.423);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.623 0.214 259.815);
+  --user-bubble: oklch(0.90 0.003 106);
+  --user-bubble-foreground: oklch(0.147 0.004 49.25);
+  /* Status semantic tokens */
+  --status-success: oklch(0.527 0.154 150.069);
+  --status-success-foreground: oklch(0.448 0.133 148.697);
+  --status-success-muted: oklch(0.527 0.154 150.069 / 10%);
+  --status-success-border: oklch(0.527 0.154 150.069 / 20%);
+  --status-warning: oklch(0.705 0.213 47.604);
+  --status-warning-foreground: oklch(0.705 0.213 47.604);
+  --status-warning-muted: oklch(0.705 0.213 47.604 / 10%);
+  --status-warning-border: oklch(0.705 0.213 47.604 / 20%);
+  --status-error: oklch(0.704 0.191 22.216);
+  --status-error-foreground: oklch(0.704 0.191 22.216);
+  --status-error-muted: oklch(0.704 0.191 22.216 / 10%);
+  --status-error-border: oklch(0.704 0.191 22.216 / 20%);
+  --status-info: oklch(0.623 0.214 259.815);
+  --status-info-foreground: oklch(0.623 0.214 259.815);
+  --status-info-muted: oklch(0.623 0.214 259.815 / 10%);
+  --status-info-border: oklch(0.623 0.214 259.815 / 20%);
+  /* Terminal tokens — dark mode: stronger border contrast against dark page bg */
+  --terminal-bg: oklch(0.10 0.002 49);
+  --terminal-foreground: oklch(0.87 0.006 106);
+  --terminal-muted: oklch(0.60 0.01 58);
+  --terminal-border: oklch(0.35 0.006 49);
+  --terminal-accent: oklch(0.62 0.17 155);
+  --terminal-hover-bg: oklch(0.22 0.005 49);
+  --terminal-gradient-from: oklch(0.10 0.002 49);
 }
 
 @layer base {
@@ -123,29 +194,12 @@
     @apply bg-background text-foreground;
   }
 
-  /* Mobile: prevent rubber-banding scroll on iOS */
-  html, body {
-    overscroll-behavior: none;
-  }
-
-  /* Mobile touch improvements */
-  @media (max-width: 767px) {
-    /* Prevent text selection on UI elements */
-    button, a, nav {
-      -webkit-tap-highlight-color: transparent;
-    }
-    /* Better touch targets */
-    input, textarea, select {
-      font-size: 16px; /* Prevent iOS zoom on focus */
-    }
-  }
-
-  /* Selection color */
+  /* Selection color — derives from primary */
   ::selection {
-    background: oklch(0.7 0.15 260 / 30%);
+    background: color-mix(in oklch, var(--primary) 30%, transparent);
   }
   .dark ::selection {
-    background: oklch(0.6 0.2 260 / 35%);
+    background: color-mix(in oklch, var(--primary) 35%, transparent);
   }
 
   /* Custom scrollbar */
@@ -157,17 +211,17 @@
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: oklch(0.7 0 0 / 25%);
+    background: color-mix(in oklch, var(--muted-foreground) 25%, transparent);
     border-radius: 3px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: oklch(0.6 0 0 / 40%);
+    background: color-mix(in oklch, var(--muted-foreground) 40%, transparent);
   }
   .dark ::-webkit-scrollbar-thumb {
-    background: oklch(0.5 0 0 / 30%);
+    background: color-mix(in oklch, var(--muted-foreground) 30%, transparent);
   }
   .dark ::-webkit-scrollbar-thumb:hover {
-    background: oklch(0.5 0 0 / 50%);
+    background: color-mix(in oklch, var(--muted-foreground) 50%, transparent);
   }
 
   /* Prose (markdown) refinements */
@@ -196,16 +250,16 @@
     margin-bottom: 0.25em;
   }
   .prose blockquote {
-    border-left-color: oklch(0.7 0.15 260 / 40%);
+    border-left-color: color-mix(in oklch, var(--primary) 40%, transparent);
     font-style: normal;
   }
   .prose a {
-    color: oklch(0.55 0.2 250);
+    color: var(--primary);
     text-decoration: underline;
     text-underline-offset: 2px;
   }
   .dark .prose a {
-    color: oklch(0.7 0.18 250);
+    color: var(--primary);
   }
   .prose hr {
     border-color: var(--border);
@@ -215,12 +269,51 @@
   }
 }
 
-/* Global icon stroke weight — make Hugeicons strokes slightly thicker */
-svg.hugeicons,
-svg.hugeicons path,
-svg.hugeicons line,
-svg.hugeicons circle,
-svg.hugeicons polyline,
-svg.hugeicons rect {
-  stroke-width: 2;
+/* Widget skeleton shimmer animation */
+@keyframes widget-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+@utility animate-shimmer {
+  animation: widget-shimmer 2s ease-in-out infinite;
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in oklch, var(--muted-foreground) 8%, transparent) 40%,
+    color-mix(in oklch, var(--muted-foreground) 15%, transparent) 50%,
+    color-mix(in oklch, var(--muted-foreground) 8%, transparent) 60%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+}
+
+/*
+ * Override Streamdown's bash/shell code block inline Shiki token colors.
+ * Placed outside @layer to ensure highest CSS specificity.
+ * Streamdown sets inline style="color:..." on each token span; only
+ * !important at the top layer can override inline styles.
+ */
+[data-language="bash"] pre,
+[data-language="sh"] pre,
+[data-language="shell"] pre,
+[data-language="zsh"] pre,
+[data-language="console"] pre,
+[data-language="terminal"] pre {
+  background-color: var(--terminal-bg) !important;
+  color: var(--terminal-foreground) !important;
+}
+
+[data-language="bash"] pre span[style],
+[data-language="sh"] pre span[style],
+[data-language="shell"] pre span[style],
+[data-language="zsh"] pre span[style],
+[data-language="console"] pre span[style],
+[data-language="terminal"] pre span[style] {
+  color: inherit !important;
+  background-color: transparent !important;
 }

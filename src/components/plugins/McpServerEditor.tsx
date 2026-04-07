@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Dialog,
   DialogContent,
@@ -13,8 +13,8 @@ import {
   DialogTitle,
   DialogFooter,
 } from '@/components/ui/dialog';
-import { HugeiconsIcon } from "@hugeicons/react";
-import { ServerStack01Icon, Wifi01Icon, GlobeIcon, CodeIcon } from "@hugeicons/core-free-icons";
+import { HardDrives, WifiHigh, Globe, Code } from "@/components/ui/icon";
+import { useTranslation } from '@/hooks/useTranslation';
 import type { MCPServer } from '@/types';
 
 type ServerType = 'stdio' | 'sse' | 'http';
@@ -35,6 +35,7 @@ export function McpServerEditor({
   onSave,
 }: McpServerEditorProps) {
   const isEditing = !!initialName;
+  const { t } = useTranslation();
   const [name, setName] = useState(initialName || '');
   const [serverType, setServerType] = useState<ServerType>(
     initialServer?.type || 'stdio'
@@ -160,7 +161,6 @@ export function McpServerEditor({
           ...(env ? { env } : {}),
         }
       : {
-          command: '',
           type: serverType,
           ...(url ? { url: url.trim() } : {}),
           ...(serverArgs.length > 0 ? { args: serverArgs } : {}),
@@ -177,13 +177,13 @@ export function McpServerEditor({
       <DialogContent className="sm:max-w-[550px] max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>
-            {isEditing ? `Edit MCP Server: ${initialName}` : 'Add MCP Server'}
+            {isEditing ? `${t('mcp.editServer')}: ${initialName}` : t('mcp.addServer')}
           </DialogTitle>
         </DialogHeader>
 
         <div className="space-y-4 py-2">
           <div className="space-y-2">
-            <Label htmlFor="server-name">Server Name</Label>
+            <Label htmlFor="server-name">{t('mcp.serverName')}</Label>
             <Input
               id="server-name"
               value={name}
@@ -206,7 +206,7 @@ export function McpServerEditor({
                 setError(null);
               }}
             >
-              Form
+              {t('mcp.formTab')}
             </Button>
             <Button
               variant={jsonMode ? 'default' : 'outline'}
@@ -236,8 +236,8 @@ export function McpServerEditor({
                 setError(null);
               }}
             >
-              <HugeiconsIcon icon={CodeIcon} className="h-3.5 w-3.5" />
-              JSON
+              <Code size={14} />
+              {t('mcp.jsonEditTab')}
             </Button>
           </div>
 
@@ -257,7 +257,7 @@ export function McpServerEditor({
           ) : (
             <>
               <div className="space-y-2">
-                <Label>Server Type</Label>
+                <Label>{t('mcp.serverType')}</Label>
                 <Tabs
                   value={serverType}
                   onValueChange={(v) => {
@@ -267,15 +267,15 @@ export function McpServerEditor({
                 >
                   <TabsList className="w-full">
                     <TabsTrigger value="stdio" className="flex-1 gap-1.5">
-                      <HugeiconsIcon icon={ServerStack01Icon} className="h-3.5 w-3.5" />
+                      <HardDrives size={14} />
                       stdio
                     </TabsTrigger>
                     <TabsTrigger value="sse" className="flex-1 gap-1.5">
-                      <HugeiconsIcon icon={Wifi01Icon} className="h-3.5 w-3.5" />
+                      <WifiHigh size={14} />
                       SSE
                     </TabsTrigger>
                     <TabsTrigger value="http" className="flex-1 gap-1.5">
-                      <HugeiconsIcon icon={GlobeIcon} className="h-3.5 w-3.5" />
+                      <Globe size={14} />
                       HTTP
                     </TabsTrigger>
                   </TabsList>
@@ -285,7 +285,7 @@ export function McpServerEditor({
               {serverType === 'stdio' ? (
                 <>
                   <div className="space-y-2">
-                    <Label htmlFor="server-command">Command</Label>
+                    <Label htmlFor="server-command">{t('mcp.command')}</Label>
                     <Input
                       id="server-command"
                       value={command}
@@ -299,7 +299,7 @@ export function McpServerEditor({
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="server-args">Arguments (one per line)</Label>
+                    <Label htmlFor="server-args">{t('mcp.argsLabel')}</Label>
                     <Textarea
                       id="server-args"
                       value={args}
@@ -312,7 +312,7 @@ export function McpServerEditor({
               ) : (
                 <>
                   <div className="space-y-2">
-                    <Label htmlFor="server-url">URL</Label>
+                    <Label htmlFor="server-url">{t('mcp.url')}</Label>
                     <Input
                       id="server-url"
                       value={url}
@@ -330,7 +330,7 @@ export function McpServerEditor({
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="server-headers">Headers (JSON)</Label>
+                    <Label htmlFor="server-headers">{t('mcp.headers')}</Label>
                     <Textarea
                       id="server-headers"
                       value={headersText}
@@ -346,7 +346,7 @@ export function McpServerEditor({
               )}
 
               <div className="space-y-2">
-                <Label htmlFor="server-env">Environment Variables (JSON)</Label>
+                <Label htmlFor="server-env">{t('mcp.envVars')}</Label>
                 <Textarea
                   id="server-env"
                   value={envText}
@@ -366,10 +366,10 @@ export function McpServerEditor({
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button onClick={handleSave}>
-            {isEditing ? 'Save Changes' : 'Add Server'}
+            {isEditing ? t('mcp.saveChanges') : t('mcp.addServer')}
           </Button>
         </DialogFooter>
       </DialogContent>

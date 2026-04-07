@@ -1,144 +1,157 @@
 "use client";
 
 import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import Link from "next/link";
-import { useEffect, useState, useCallback, useMemo } from "react";
-import { HugeiconsIcon } from "@hugeicons/react";
+import { motion, AnimatePresence } from "motion/react";
 import {
-  Delete02Icon,
-  Search01Icon,
-  Notification02Icon,
-  FileImportIcon,
-  Folder01Icon,
-  ArrowDown01Icon,
-  ArrowRight01Icon,
-  PlusSignIcon,
-  FolderOpenIcon,
-} from "@hugeicons/core-free-icons";
+  MagnifyingGlass,
+  FileArrowDown,
+  Plus,
+  FolderPlus,
+  Lightning,
+  Plug,
+  Terminal,
+  Image,
+  WifiHigh,
+  Gear,
+} from "@/components/ui/icon";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Dialog,
+  DialogContent,
+} from "@/components/ui/dialog";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { cn } from "@/lib/utils";
 import { usePanel } from "@/hooks/usePanel";
+import { useSplit } from "@/hooks/useSplit";
+import { useTranslation } from "@/hooks/useTranslation";
+import type { TranslationKey } from "@/i18n";
+import { useNativeFolderPicker } from "@/hooks/useNativeFolderPicker";
+import { showToast } from '@/hooks/useToast';
 import { ConnectionStatus } from "./ConnectionStatus";
-import { ImportSessionDialog } from "./ImportSessionDialog";
+// ImportSessionDialog moved to Settings page
+import { SessionListItem, SplitGroupSection } from "./SessionListItem";
+import { ProjectGroupHeader } from "./ProjectGroupHeader";
 import { FolderPicker } from "@/components/chat/FolderPicker";
+import { useAssistantWorkspace } from "@/hooks/useAssistantWorkspace";
+import { AssistantPromoCard } from "@/components/chat/ChatEmptyState";
+import {
+  formatRelativeTime,
+  groupSessionsByProject,
+  loadCollapsedProjects,
+  saveCollapsedProjects,
+  COLLAPSED_INITIALIZED_KEY,
+} from "./chat-list-utils";
 import type { ChatSession } from "@/types";
 
 interface ChatListPanelProps {
   open: boolean;
   width?: number;
-  /** Mobile full-screen overlay mode */
-  mobile?: boolean;
+  hasUpdate?: boolean;
+  readyToInstall?: boolean;
 }
 
-function formatRelativeTime(dateStr: string): string {
-  const date = new Date(dateStr.includes("T") ? dateStr : dateStr + "Z");
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMin = Math.floor(diffMs / 60000);
-  const diffHr = Math.floor(diffMin / 60);
-  const diffDay = Math.floor(diffHr / 24);
 
-  if (diffMin < 1) return "just now";
-  if (diffMin < 60) return `${diffMin}m`;
-  if (diffHr < 24) return `${diffHr}h`;
-  if (diffDay < 7) return `${diffDay}d`;
-  return date.toLocaleDateString();
-}
-
-const COLLAPSED_PROJECTS_KEY = "codepilot:collapsed-projects";
-
-function loadCollapsedProjects(): Set<string> {
-  if (typeof window === 'undefined') return new Set();
-  try {
-    const raw = localStorage.getItem(COLLAPSED_PROJECTS_KEY);
-    if (raw) return new Set(JSON.parse(raw));
-  } catch {
-    // ignore
-  }
-  return new Set();
-}
-
-function saveCollapsedProjects(collapsed: Set<string>) {
-  localStorage.setItem(COLLAPSED_PROJECTS_KEY, JSON.stringify([...collapsed]));
-}
-
-interface ProjectGroup {
-  workingDirectory: string;
-  displayName: string;
-  sessions: ChatSession[];
-  latestUpdatedAt: number;
-}
-
-function groupSessionsByProject(sessions: ChatSession[]): ProjectGroup[] {
-  const map = new Map<string, ChatSession[]>();
-  for (const session of sessions) {
-    const key = session.working_directory || "";
-    if (!map.has(key)) map.set(key, []);
-    map.get(key)!.push(session);
-  }
-
-  const groups: ProjectGroup[] = [];
-  for (const [wd, groupSessions] of map) {
-    // Sort sessions within group by updated_at DESC
-    groupSessions.sort(
-      (a, b) =>
-        new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
-    );
-    const displayName =
-      wd === ""
-        ? "No Project"
-        : groupSessions[0]?.project_name || wd.split("/").pop() || wd;
-    const latestUpdatedAt = new Date(groupSessions[0].updated_at).getTime();
-    groups.push({
-      workingDirectory: wd,
-      displayName,
-      sessions: groupSessions,
-      latestUpdatedAt,
-    });
-  }
-
-  // Sort groups by most recently active first
-  groups.sort((a, b) => b.latestUpdatedAt - a.latestUpdatedAt);
-  return groups;
-}
-
-const MODE_BADGE_CONFIG = {
-  code: { label: "Code", className: "bg-blue-500/10 text-blue-500" },
-  plan: { label: "Plan", className: "bg-sky-500/10 text-sky-500" },
-  ask: { label: "Ask", className: "bg-green-500/10 text-green-500" },
-} as const;
-
-export function ChatListPanel({ open, width, mobile }: ChatListPanelProps) {
+export function ChatListPanel({ open, width, hasUpdate, readyToInstall }: ChatListPanelProps) {
   const pathname = usePathname();
   const router = useRouter();
-  const { streamingSessionId, pendingApprovalSessionId } = usePanel();
+  const { streamingSessionId, pendingApprovalSessionId, activeStreamingSessions, pendingApprovalSessionIds, workingDirectory } = usePanel();
+  const { splitSessions, isSplitActive, activeColumnId, addToSplit, removeFromSplit, setActiveColumn, isInSplit } = useSplit();
+  const { t } = useTranslation();
+  const { isElectron, openNativePicker } = useNativeFolderPicker();
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [hoveredSession, setHoveredSession] = useState<string | null>(null);
   const [deletingSession, setDeletingSession] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const [importDialogOpen, setImportDialogOpen] = useState(false);
+  const [searchDialogOpen, setSearchDialogOpen] = useState(false);
+  const [expandedSessionGroups, setExpandedSessionGroups] = useState<Set<string>>(new Set());
+  const SESSION_TRUNCATE_LIMIT = 10;
+  // importDialogOpen removed — Import CLI moved to Settings
   const [folderPickerOpen, setFolderPickerOpen] = useState(false);
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(
     () => loadCollapsedProjects()
   );
   const [hoveredFolder, setHoveredFolder] = useState<string | null>(null);
   const [creatingChat, setCreatingChat] = useState(false);
+  const { workspacePath } = useAssistantWorkspace();
+  const [assistantSummary, setAssistantSummary] = useState<{
+    name: string;
+    memoryCount: number;
+    lastHeartbeatDate: string;
+    configured: boolean;
+    buddy?: { emoji: string; buddyName?: string; species?: string };
+  } | null>(null);
+  const [promoDismissed, setPromoDismissed] = useState(false);
+
+  // Reload assistant summary when sessions change (e.g. after onboarding/rename)
+  useEffect(() => {
+    fetch('/api/workspace/summary')
+      .then(r => r.ok ? r.json() : null)
+      .then(data => setAssistantSummary(data))
+      .catch(() => {});
+  }, [sessions.length]);
+
+  /** Read current model + provider_id from localStorage for new session creation */
+  const getCurrentModelAndProvider = useCallback(() => {
+    const model = typeof window !== 'undefined' ? localStorage.getItem('codepilot:last-model') || '' : '';
+    const provider_id = typeof window !== 'undefined' ? localStorage.getItem('codepilot:last-provider-id') || '' : '';
+    return { model, provider_id };
+  }, []);
+
+  const handleFolderSelect = useCallback(async (path: string) => {
+    try {
+      const { model, provider_id } = getCurrentModelAndProvider();
+      const res = await fetch("/api/chat/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ working_directory: path, model, provider_id }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        window.dispatchEvent(new CustomEvent("session-created"));
+        router.push(`/chat/${data.session.id}`);
+      }
+    } catch {
+      // Silently fail
+    }
+  }, [router, getCurrentModelAndProvider]);
+
+  const openFolderPicker = useCallback(async (defaultPath?: string) => {
+    if (isElectron) {
+      const path = await openNativePicker({ defaultPath, title: t('folderPicker.title') });
+      if (path) handleFolderSelect(path);
+    } else {
+      setFolderPickerOpen(true);
+    }
+  }, [isElectron, openNativePicker, t, handleFolderSelect]);
 
   const handleNewChat = useCallback(async () => {
-    const lastDir = typeof window !== 'undefined'
-      ? localStorage.getItem("codepilot:last-working-directory")
-      : null;
+    let lastDir = workingDirectory
+      || (typeof window !== 'undefined' ? localStorage.getItem("codepilot:last-working-directory") : null);
+
+    // Fall back to setup default project if no recent directory
+    if (!lastDir) {
+      try {
+        const setupRes = await fetch('/api/setup');
+        if (setupRes.ok) {
+          const setupData = await setupRes.json();
+          if (setupData.defaultProject) {
+            lastDir = setupData.defaultProject;
+            localStorage.setItem('codepilot:last-working-directory', lastDir!);
+          }
+        }
+      } catch { /* ignore */ }
+    }
 
     if (!lastDir) {
       // No saved directory — let user pick one
-      setFolderPickerOpen(true);
+      openFolderPicker();
       return;
     }
 
@@ -149,32 +162,55 @@ export function ChatListPanel({ open, width, mobile }: ChatListPanelProps) {
         `/api/files/browse?dir=${encodeURIComponent(lastDir)}`
       );
       if (!checkRes.ok) {
-        // Directory is gone — clear stale value and prompt user
+        // Directory is gone — clear stale value, try setup default before prompting
         localStorage.removeItem("codepilot:last-working-directory");
-        setFolderPickerOpen(true);
-        return;
+        let recovered = false;
+        try {
+          const setupRes = await fetch('/api/setup');
+          if (setupRes.ok) {
+            const setupData = await setupRes.json();
+            if (setupData.defaultProject && setupData.defaultProject !== lastDir) {
+              const defaultCheck = await fetch(`/api/files/browse?dir=${encodeURIComponent(setupData.defaultProject)}`);
+              if (defaultCheck.ok) {
+                lastDir = setupData.defaultProject;
+                localStorage.setItem('codepilot:last-working-directory', lastDir!);
+                recovered = true;
+              }
+            }
+          }
+        } catch { /* ignore */ }
+        if (!recovered) {
+          showToast({
+            type: 'warning',
+            message: t('error.directoryInvalid'),
+            action: { label: t('error.selectDirectory'), onClick: () => openFolderPicker() },
+          });
+          openFolderPicker();
+          return;
+        }
       }
 
+      const { model, provider_id } = getCurrentModelAndProvider();
       const res = await fetch("/api/chat/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ working_directory: lastDir }),
+        body: JSON.stringify({ working_directory: lastDir, model, provider_id }),
       });
       if (!res.ok) {
         // Backend rejected it (e.g. INVALID_DIRECTORY) — prompt user
         localStorage.removeItem("codepilot:last-working-directory");
-        setFolderPickerOpen(true);
+        openFolderPicker();
         return;
       }
       const data = await res.json();
       router.push(`/chat/${data.session.id}`);
       window.dispatchEvent(new CustomEvent("session-created"));
     } catch {
-      setFolderPickerOpen(true);
+      openFolderPicker();
     } finally {
       setCreatingChat(false);
     }
-  }, [router]);
+  }, [router, workingDirectory, openFolderPicker, getCurrentModelAndProvider, t]);
 
   const toggleProject = useCallback((wd: string) => {
     setCollapsedProjects((prev) => {
@@ -186,36 +222,60 @@ export function ChatListPanel({ open, width, mobile }: ChatListPanelProps) {
     });
   }, []);
 
+  // AbortController ref for cancelling in-flight requests
+  const abortRef = useRef<AbortController | null>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const fetchSessions = useCallback(async () => {
+    // Cancel any in-flight request
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
-      const res = await fetch("/api/chat/sessions");
+      const res = await fetch("/api/chat/sessions", { signal: controller.signal });
       if (res.ok) {
         const data = await res.json();
         setSessions(data.sessions || []);
       }
-    } catch {
-      // API may not be available yet
+    } catch (e) {
+      // Ignore abort errors; log others
+      if (e instanceof DOMException && e.name === 'AbortError') return;
     }
   }, []);
 
-  useEffect(() => {
-    fetchSessions();
+  const debouncedFetchSessions = useCallback(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      fetchSessions();
+    }, 300);
   }, [fetchSessions]);
 
-  // Refresh session list when navigating
+  // Fetch on mount
   useEffect(() => {
     fetchSessions();
-  }, [pathname, fetchSessions]);
+    return () => {
+      abortRef.current?.abort();
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [fetchSessions]);
 
-  // Refresh session list when a session is created or updated
+  // Refresh session list when a session is created or updated (debounced)
   useEffect(() => {
-    const handler = () => fetchSessions();
+    const handler = () => debouncedFetchSessions();
     window.addEventListener("session-created", handler);
     window.addEventListener("session-updated", handler);
     return () => {
       window.removeEventListener("session-created", handler);
       window.removeEventListener("session-updated", handler);
     };
+  }, [debouncedFetchSessions]);
+
+  // Periodic poll to catch sessions created server-side (e.g. bridge)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchSessions();
+    }, 5000);
+    return () => clearInterval(interval);
   }, [fetchSessions]);
 
   const handleDeleteSession = async (
@@ -232,6 +292,10 @@ export function ChatListPanel({ open, width, mobile }: ChatListPanelProps) {
       });
       if (res.ok) {
         setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+        // Remove from split if it's there
+        if (isInSplit(sessionId)) {
+          removeFromSplit(sessionId);
+        }
         if (pathname === `/chat/${sessionId}`) {
           router.push("/chat");
         }
@@ -243,33 +307,64 @@ export function ChatListPanel({ open, width, mobile }: ChatListPanelProps) {
     }
   };
 
-  const handleCreateSessionInProject = async (
-    e: React.MouseEvent,
-    workingDirectory: string
-  ) => {
-    e.stopPropagation();
+  const handleRenameSession = async (sessionId: string, newTitle: string) => {
     try {
-      const res = await fetch("/api/chat/sessions", {
-        method: "POST",
+      const res = await fetch(`/api/chat/sessions/${sessionId}`, {
+        method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ working_directory: workingDirectory }),
+        body: JSON.stringify({ title: newTitle }),
       });
       if (res.ok) {
-        const data = await res.json();
-        window.dispatchEvent(new CustomEvent("session-created"));
-        router.push(`/chat/${data.session.id}`);
+        setSessions((prev) =>
+          prev.map((s) => (s.id === sessionId ? { ...s, title: newTitle } : s))
+        );
+        window.dispatchEvent(new CustomEvent("session-updated"));
       }
     } catch {
       // Silently fail
     }
   };
 
-  const handleFolderSelect = async (path: string) => {
+  const handleRemoveProject = async (workingDirectory: string) => {
+    if (!confirm(`Remove project "${workingDirectory.split('/').pop()}" and all its conversations?`)) return;
+    const projectSessions = sessions.filter((s) => s.working_directory === workingDirectory);
+    const deletedIds = new Set<string>();
+    for (const session of projectSessions) {
+      try {
+        const res = await fetch(`/api/chat/sessions/${session.id}`, { method: "DELETE" });
+        if (res.ok) {
+          deletedIds.add(session.id);
+          if (isInSplit(session.id)) {
+            removeFromSplit(session.id);
+          }
+        }
+      } catch {
+        // Continue with remaining
+      }
+    }
+    // Only remove sessions that were successfully deleted from backend
+    if (deletedIds.size > 0) {
+      setSessions((prev) => prev.filter((s) => !deletedIds.has(s.id)));
+      if (pathname?.startsWith('/chat/')) {
+        const currentSessionId = pathname.split('/chat/')[1];
+        if (deletedIds.has(currentSessionId)) {
+          router.push("/chat");
+        }
+      }
+    }
+  };
+
+  const handleCreateSessionInProject = async (
+    e: React.MouseEvent,
+    workingDirectory: string
+  ) => {
+    e.stopPropagation();
     try {
+      const { model, provider_id } = getCurrentModelAndProvider();
       const res = await fetch("/api/chat/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ working_directory: path }),
+        body: JSON.stringify({ working_directory: workingDirectory, model, provider_id }),
       });
       if (res.ok) {
         const data = await res.json();
@@ -283,110 +378,187 @@ export function ChatListPanel({ open, width, mobile }: ChatListPanelProps) {
 
   const isSearching = searchQuery.length > 0;
 
-  const filteredSessions = searchQuery
-    ? sessions.filter(
+  const splitSessionIds = useMemo(
+    () => new Set(splitSessions.map((s) => s.sessionId)),
+    [splitSessions]
+  );
+
+  const filteredSessions = useMemo(() => {
+    let result = sessions;
+    if (searchQuery) {
+      result = result.filter(
         (s) =>
           s.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
           (s.project_name &&
             s.project_name.toLowerCase().includes(searchQuery.toLowerCase()))
-      )
-    : sessions;
+      );
+    }
+    // Exclude sessions in split group (they are shown in the split section)
+    if (isSplitActive) {
+      result = result.filter((s) => !splitSessionIds.has(s.id));
+    }
+    return result;
+  }, [sessions, searchQuery, isSplitActive, splitSessionIds]);
 
-  const projectGroups = useMemo(
-    () => groupSessionsByProject(filteredSessions),
-    [filteredSessions]
-  );
+  const projectGroups = useMemo(() => {
+    const groups = groupSessionsByProject(filteredSessions);
+    // Pin assistant workspace project to top
+    if (workspacePath) {
+      const wsIdx = groups.findIndex(g => g.workingDirectory === workspacePath);
+      if (wsIdx > 0) {
+        const [wsGroup] = groups.splice(wsIdx, 1);
+        groups.unshift(wsGroup);
+      }
+    }
+    return groups;
+  }, [filteredSessions, workspacePath]);
+
+  // Auto-collapse: only expand the project with the most recent session activity.
+  // Runs on first use AND whenever the project list changes (new projects added).
+  useEffect(() => {
+    if (projectGroups.length <= 1) return;
+    // Find the project with the latest session (highest latestUpdatedAt), ignoring pin order
+    const sorted = [...projectGroups].sort((a, b) => b.latestUpdatedAt - a.latestUpdatedAt);
+    const mostRecentWd = sorted[0]?.workingDirectory;
+    const toCollapse = new Set(
+      projectGroups
+        .filter(g => g.workingDirectory !== mostRecentWd)
+        .map(g => g.workingDirectory)
+    );
+    // Only update if collapsed set actually changed (avoid infinite loop)
+    const currentKeys = [...collapsedProjects].sort().join(',');
+    const newKeys = [...toCollapse].sort().join(',');
+    // v2: re-initialize with improved logic (pin-aware)
+    const initKey = COLLAPSED_INITIALIZED_KEY + '-v2';
+    if (currentKeys !== newKeys && !localStorage.getItem(initKey)) {
+      setCollapsedProjects(toCollapse);
+      saveCollapsedProjects(toCollapse);
+      localStorage.setItem(initKey, "1");
+    }
+  }, [projectGroups, collapsedProjects]);
 
   if (!open) return null;
 
+  const navItems = [
+    { href: "/skills", label: t('nav.skills' as TranslationKey), icon: Lightning },
+    { href: "/mcp", label: t('nav.mcp' as TranslationKey), icon: Plug },
+    { href: "/cli-tools", label: t('nav.cliTools' as TranslationKey), icon: Terminal },
+    { href: "/gallery", label: t('nav.gallery' as TranslationKey), icon: Image },
+    { href: "/bridge", label: t('nav.bridge' as TranslationKey), icon: WifiHigh },
+  ];
+
   return (
     <aside
-      className={cn(
-        "h-full shrink-0 flex-col overflow-hidden bg-sidebar",
-        mobile ? "flex w-full" : "hidden lg:flex"
-      )}
-      style={mobile ? undefined : { width: width ?? 240 }}
+      className="hidden h-full shrink-0 flex-col overflow-hidden bg-sidebar/80 backdrop-blur-xl lg:flex"
+      style={{ width: width ?? 240 }}
     >
-      {/* Header - extra top padding for macOS traffic lights (desktop only) */}
-      <div className={cn(
-        "flex shrink-0 items-center justify-between px-3",
-        mobile ? "h-14 pt-2 pl-4" : "h-12 mt-5 pl-6"
-      )}>
-        <span className={cn(
-          "font-semibold tracking-tight text-sidebar-foreground",
-          mobile ? "text-base" : "text-[13px]"
-        )}>
-          Threads
-        </span>
+      {/* Header - extra top padding for macOS traffic lights */}
+      <div className="flex h-12 shrink-0 items-center justify-between px-3 mt-5">
         <ConnectionStatus />
       </div>
 
-      {/* New Chat + New Project */}
-      <div className={cn("flex items-center gap-2 px-3", mobile ? "pb-3" : "pb-2")}>
+      {/* Top action bar: New Chat + Search */}
+      <div className="flex items-center gap-2 px-3 pb-2">
         <Button
           variant="outline"
           size="sm"
-          className={cn(
-            "flex-1 justify-center gap-1.5",
-            mobile ? "h-10 text-sm" : "h-8 text-xs"
-          )}
+          className="flex-1 justify-center gap-1.5 h-8 text-xs"
           disabled={creatingChat}
           onClick={handleNewChat}
         >
-          <HugeiconsIcon icon={PlusSignIcon} className={mobile ? "h-4 w-4" : "h-3.5 w-3.5"} />
-          New Chat
+          <Plus size={14} />
+          {t('chatList.newConversation')}
         </Button>
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
               variant="outline"
               size="icon-sm"
-              className={mobile ? "h-10 w-10 shrink-0" : "h-8 w-8 shrink-0"}
-              onClick={() => setFolderPickerOpen(true)}
+              className="h-8 w-8 shrink-0"
+              onClick={() => setSearchDialogOpen(true)}
             >
-              <HugeiconsIcon icon={FolderOpenIcon} className={mobile ? "h-4 w-4" : "h-3.5 w-3.5"} />
-              <span className="sr-only">Open project folder</span>
+              <MagnifyingGlass size={14} />
+              <span className="sr-only">{t('chatList.searchSessions')}</span>
             </Button>
           </TooltipTrigger>
-          <TooltipContent side="bottom">Open project folder</TooltipContent>
+          <TooltipContent side="bottom">{t('chatList.searchSessions')}</TooltipContent>
         </Tooltip>
       </div>
 
-      {/* Search */}
+      {/* Feature nav items */}
       <div className="px-3 pb-2">
-        <div className="relative">
-          <HugeiconsIcon
-            icon={Search01Icon}
-            className="absolute left-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground"
-          />
-          <Input
-            placeholder="Search threads..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="h-8 pl-7 text-xs"
-          />
+        <div className="flex flex-col gap-0.5">
+          {navItems.map((item) => {
+            const isActive = pathname.startsWith(item.href);
+            return (
+              <Link key={item.href} href={item.href}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className={`w-full justify-start gap-2 h-8 text-xs ${
+                    isActive
+                      ? "bg-accent text-accent-foreground font-medium"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <item.icon size={14} weight={isActive ? "fill" : "regular"} />
+                  {item.label}
+                </Button>
+              </Link>
+            );
+          })}
         </div>
       </div>
 
-      {/* Import CLI Session */}
-      <div className="px-3 pb-1">
+      {/* Separator */}
+      <div className="mx-3 border-t border-border/40" />
+
+      {/* Section title + add folder button (fixed, not scrolling) */}
+      <div className="flex items-center justify-between px-5 pt-2 pb-1.5 shrink-0">
+        <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/60">
+          {t('chatList.threads')}
+        </span>
         <Button
           variant="ghost"
           size="sm"
-          className="w-full justify-start gap-2 h-7 text-xs text-muted-foreground hover:text-foreground"
-          onClick={() => setImportDialogOpen(true)}
+          className="h-5 gap-1 px-1.5 text-[11px] text-muted-foreground/60 hover:text-foreground"
+          onClick={() => openFolderPicker()}
         >
-          <HugeiconsIcon icon={FileImportIcon} className="h-3 w-3" />
-          Import CLI Session
+          <FolderPlus size={12} />
+          {t('chatList.addProjectFolder')}
         </Button>
       </div>
 
       {/* Session list grouped by project */}
-      <ScrollArea className="flex-1 min-h-0 px-3">
+      <ScrollArea className="flex-1 min-h-0 px-3 [&>[data-slot=scroll-area-viewport]>div]:!block">
         <div className="flex flex-col pb-3">
-          {filteredSessions.length === 0 ? (
+
+          {/* Split group section */}
+          {isSplitActive && (
+            <SplitGroupSection
+              splitSessions={splitSessions}
+              activeColumnId={activeColumnId}
+              streamingSessionId={streamingSessionId}
+              pendingApprovalSessionId={pendingApprovalSessionId}
+              activeStreamingSessions={activeStreamingSessions}
+              pendingApprovalSessionIds={pendingApprovalSessionIds}
+              t={t}
+              setActiveColumn={setActiveColumn}
+              removeFromSplit={removeFromSplit}
+            />
+          )}
+
+          {/* Assistant promo card for unconfigured users */}
+          {assistantSummary && !assistantSummary.configured && !promoDismissed && (
+            <AssistantPromoCard
+              onSetup={() => router.push('/settings#assistant')}
+              onDismiss={() => setPromoDismissed(true)}
+            />
+          )}
+
+          {filteredSessions.length === 0 && (!isSplitActive || splitSessions.length === 0) ? (
             <p className="px-2.5 py-3 text-[11px] text-muted-foreground/60">
-              {searchQuery ? "No matching threads" : "No conversations yet"}
+              {searchQuery ? "No matching threads" : t('chatList.noSessions')}
             </p>
           ) : (
             projectGroups.map((group) => {
@@ -395,167 +567,111 @@ export function ChatListPanel({ open, width, mobile }: ChatListPanelProps) {
               const isFolderHovered =
                 hoveredFolder === group.workingDirectory;
 
+              const isSessionsExpanded = expandedSessionGroups.has(group.workingDirectory);
+              const shouldTruncate = group.sessions.length > SESSION_TRUNCATE_LIMIT;
+              let visibleSessions = group.sessions;
+              if (shouldTruncate && !isSessionsExpanded) {
+                const truncated = group.sessions.slice(0, SESSION_TRUNCATE_LIMIT);
+                // Ensure the active session is always visible even when truncated
+                const activeSession = group.sessions.find(s => pathname === `/chat/${s.id}`);
+                if (activeSession && !truncated.includes(activeSession)) {
+                  truncated.push(activeSession);
+                }
+                visibleSessions = truncated;
+              }
+              const hiddenCount = group.sessions.length - visibleSessions.length;
+
+              const groupIsWorkspace = !!(workspacePath && group.workingDirectory === workspacePath);
+
               return (
                 <div key={group.workingDirectory || "__no_project"} className="mt-1 first:mt-0">
                   {/* Folder header */}
-                  <div
-                    className={cn(
-                      "flex items-center gap-1 rounded-md px-2 cursor-pointer select-none transition-colors",
-                      "hover:bg-accent/50",
-                      mobile ? "py-2.5" : "py-1"
-                    )}
-                    onClick={() => toggleProject(group.workingDirectory)}
-                    onMouseEnter={() =>
-                      setHoveredFolder(group.workingDirectory)
-                    }
+                  <ProjectGroupHeader
+                    workingDirectory={group.workingDirectory}
+                    displayName={group.displayName}
+                    isCollapsed={isCollapsed}
+                    isFolderHovered={isFolderHovered}
+                    isWorkspace={groupIsWorkspace}
+                    onToggle={() => toggleProject(group.workingDirectory)}
+                    onMouseEnter={() => setHoveredFolder(group.workingDirectory)}
                     onMouseLeave={() => setHoveredFolder(null)}
-                  >
-                    <HugeiconsIcon
-                      icon={isCollapsed ? ArrowRight01Icon : ArrowDown01Icon}
-                      className="h-3 w-3 shrink-0 text-muted-foreground"
-                    />
-                    <HugeiconsIcon
-                      icon={Folder01Icon}
-                      className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
-                    />
-                    <span className="flex-1 truncate text-[12px] font-medium text-sidebar-foreground">
-                      {group.displayName}
-                    </span>
-                    {/* New chat in project button (on hover) */}
-                    {group.workingDirectory !== "" && (
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="icon-xs"
-                            className={cn(
-                              "h-5 w-5 shrink-0 text-muted-foreground hover:text-foreground transition-opacity",
-                              isFolderHovered ? "opacity-100" : "opacity-0"
-                            )}
-                            tabIndex={isFolderHovered ? 0 : -1}
-                            onClick={(e) =>
-                              handleCreateSessionInProject(
-                                e,
-                                group.workingDirectory
-                              )
-                            }
-                          >
-                            <HugeiconsIcon
-                              icon={PlusSignIcon}
-                              className="h-3 w-3"
-                            />
-                            <span className="sr-only">
-                              New chat in {group.displayName}
-                            </span>
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent side="right">
-                          New chat in {group.displayName}
-                        </TooltipContent>
-                      </Tooltip>
-                    )}
-                  </div>
+                    onCreateSession={(e) => handleCreateSessionInProject(e, group.workingDirectory)}
+                    onRemoveProject={handleRemoveProject}
+                    assistantName={assistantSummary?.name}
+                    assistantMemoryCount={assistantSummary?.memoryCount}
+                    lastHeartbeatDate={assistantSummary?.lastHeartbeatDate}
+                    buddyEmoji={assistantSummary?.buddy?.emoji}
+                    buddyName={assistantSummary?.buddy?.buddyName}
+                    buddySpecies={assistantSummary?.buddy?.species}
+                  />
 
-                  {/* Session items */}
-                  {!isCollapsed && (
-                    <div className="mt-0.5 flex flex-col gap-0.5">
-                      {group.sessions.map((session) => {
-                        const isActive = pathname === `/chat/${session.id}`;
-                        const isHovered = hoveredSession === session.id;
-                        const isDeleting = deletingSession === session.id;
-                        const isSessionStreaming =
-                          streamingSessionId === session.id;
-                        const needsApproval =
-                          pendingApprovalSessionId === session.id;
-                        const mode = session.mode || "code";
-                        const badgeCfg = MODE_BADGE_CONFIG[mode];
+                  {/* Session items with animated collapse */}
+                  <AnimatePresence initial={false}>
+                    {!isCollapsed && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.2, ease: 'easeOut' }}
+                        style={{ overflow: 'hidden' }}
+                      >
+                        <div className="mt-0.5 flex flex-col gap-0.5">
+                          {visibleSessions.map((session) => {
+                            const isActive = pathname === `/chat/${session.id}`;
+                            const canSplit = !isActive && !isInSplit(session.id);
 
-                        return (
-                          <div
-                            key={session.id}
-                            className="group relative"
-                            onMouseEnter={() =>
-                              setHoveredSession(session.id)
-                            }
-                            onMouseLeave={() => setHoveredSession(null)}
-                          >
-                            <Link
-                              href={`/chat/${session.id}`}
-                              className={cn(
-                                "flex items-center gap-1.5 rounded-md pl-7 pr-2 transition-all duration-150 min-w-0",
-                                mobile ? "py-3" : "py-1.5",
-                                isActive
-                                  ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                                  : "text-sidebar-foreground hover:bg-accent/50"
-                              )}
+                            return (
+                              <SessionListItem
+                                key={session.id}
+                                session={session}
+                                isActive={isActive}
+                                isHovered={hoveredSession === session.id}
+                                isDeleting={deletingSession === session.id}
+                                isSessionStreaming={activeStreamingSessions.has(session.id) || streamingSessionId === session.id}
+                                needsApproval={pendingApprovalSessionIds.has(session.id) || pendingApprovalSessionId === session.id}
+                                canSplit={canSplit}
+                                isWorkspace={groupIsWorkspace}
+                                formatRelativeTime={formatRelativeTime}
+                                t={t}
+                                onMouseEnter={() => setHoveredSession(session.id)}
+                                onMouseLeave={() => setHoveredSession(null)}
+                                onDelete={handleDeleteSession}
+                                onRename={handleRenameSession}
+                                onAddToSplit={(s) => addToSplit({
+                                  sessionId: s.id,
+                                  title: s.title,
+                                  workingDirectory: s.working_directory || "",
+                                  projectName: s.project_name || "",
+                                  mode: s.mode,
+                                })}
+                              />
+                            );
+                          })}
+
+                          {/* Show more / Show less toggle */}
+                          {shouldTruncate && (
+                            <button
+                              onClick={() => setExpandedSessionGroups(prev => {
+                                const next = new Set(prev);
+                                if (next.has(group.workingDirectory)) {
+                                  next.delete(group.workingDirectory);
+                                } else {
+                                  next.add(group.workingDirectory);
+                                }
+                                return next;
+                              })}
+                              className="w-full py-1.5 text-center text-[11px] text-muted-foreground/60 hover:text-muted-foreground transition-colors"
                             >
-                              {/* Streaming pulse indicator */}
-                              {isSessionStreaming && (
-                                <span className="relative flex h-2 w-2 shrink-0">
-                                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75" />
-                                  <span className="relative inline-flex h-2 w-2 rounded-full bg-green-500" />
-                                </span>
-                              )}
-                              {/* Approval indicator */}
-                              {needsApproval && (
-                                <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full bg-amber-500/10">
-                                  <HugeiconsIcon
-                                    icon={Notification02Icon}
-                                    className="h-2.5 w-2.5 text-amber-500"
-                                  />
-                                </span>
-                              )}
-                              <div className="flex-1 min-w-0">
-                                <span className="line-clamp-1 text-[12px] font-medium leading-tight break-all">
-                                  {session.title}
-                                </span>
-                              </div>
-                              <div className="flex items-center gap-1 shrink-0">
-                                {/* Mode badge */}
-                                <span
-                                  className={cn(
-                                    "text-[9px] px-1 py-0.5 rounded font-medium leading-none",
-                                    badgeCfg.className
-                                  )}
-                                >
-                                  {badgeCfg.label}
-                                </span>
-                                <span className="text-[10px] text-muted-foreground/40">
-                                  {formatRelativeTime(session.updated_at)}
-                                </span>
-                              </div>
-                            </Link>
-                            {(isHovered || isDeleting) && (
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button
-                                    variant="ghost"
-                                    size="icon-xs"
-                                    className="absolute right-1 top-1 bg-sidebar text-muted-foreground/60 hover:text-destructive"
-                                    onClick={(e) =>
-                                      handleDeleteSession(e, session.id)
-                                    }
-                                    disabled={isDeleting}
-                                  >
-                                    <HugeiconsIcon
-                                      icon={Delete02Icon}
-                                      className="h-3 w-3"
-                                    />
-                                    <span className="sr-only">
-                                      Delete session
-                                    </span>
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent side="right">
-                                  Delete
-                                </TooltipContent>
-                              </Tooltip>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
+                              {isSessionsExpanded
+                                ? t('chatList.showLess' as TranslationKey)
+                                : t('chatList.showMore' as TranslationKey, { count: String(hiddenCount) })
+                              }
+                            </button>
+                          )}
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </div>
               );
             })
@@ -563,18 +679,81 @@ export function ChatListPanel({ open, width, mobile }: ChatListPanelProps) {
         </div>
       </ScrollArea>
 
-      {/* Version */}
-      <div className="shrink-0 px-3 py-2 text-center">
-        <span className="text-[10px] text-muted-foreground/40">
-          v{process.env.NEXT_PUBLIC_APP_VERSION}
-        </span>
+      {/* Bottom: Settings */}
+      <div className="shrink-0 px-3 py-2">
+        <Link href="/settings">
+          <Button
+            variant="ghost"
+            size="sm"
+            className={`w-full justify-start gap-2 h-8 text-xs ${
+              pathname.startsWith("/settings")
+                ? "bg-accent text-accent-foreground font-medium"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <Gear size={14} weight={pathname.startsWith("/settings") ? "fill" : "regular"} />
+            {t('nav.settings' as TranslationKey)}
+            {(hasUpdate || readyToInstall) && (
+              <span className={`ml-auto h-2 w-2 rounded-full ${readyToInstall ? "bg-primary" : "bg-primary animate-pulse"}`} />
+            )}
+          </Button>
+        </Link>
       </div>
 
-      {/* Import CLI Session Dialog */}
-      <ImportSessionDialog
-        open={importDialogOpen}
-        onOpenChange={setImportDialogOpen}
-      />
+      {/* Search Dialog */}
+      <Dialog open={searchDialogOpen} onOpenChange={(open) => { setSearchDialogOpen(open); if (!open) setSearchQuery(""); }}>
+        <DialogContent className="sm:max-w-md p-0 max-h-[60vh] flex flex-col overflow-hidden" showCloseButton={false}>
+          <div className="p-3 shrink-0">
+            <div className="relative">
+              <MagnifyingGlass
+                size={14}
+                className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+              />
+              <Input
+                placeholder={t('chatList.searchSessions')}
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-9"
+                autoFocus
+              />
+            </div>
+          </div>
+          {searchQuery && (
+            <div className="overflow-y-auto px-3 pb-3 flex-1 min-h-0">
+              {filteredSessions.length === 0 ? (
+                <p className="text-sm text-muted-foreground py-3 text-center">
+                  {t('chatList.noSessions')}
+                </p>
+              ) : (
+                <div className="flex flex-col gap-0.5">
+                  {filteredSessions.slice(0, 20).map((session) => (
+                    <button
+                      key={session.id}
+                      className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent transition-colors"
+                      onClick={() => {
+                        router.push(`/chat/${session.id}`);
+                        setSearchDialogOpen(false);
+                        setSearchQuery("");
+                      }}
+                    >
+                      <div className="flex-1 min-w-0">
+                        <p className="truncate text-sm">{session.title}</p>
+                        {session.project_name && (
+                          <p className="truncate text-xs text-muted-foreground">{session.project_name}</p>
+                        )}
+                      </div>
+                      <span className="text-xs text-muted-foreground shrink-0">
+                        {formatRelativeTime(session.updated_at, t)}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
 
       {/* Folder Picker Dialog */}
       <FolderPicker
@@ -582,6 +761,7 @@ export function ChatListPanel({ open, width, mobile }: ChatListPanelProps) {
         onOpenChange={setFolderPickerOpen}
         onSelect={handleFolderSelect}
       />
+
     </aside>
   );
 }
