@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { findAgentBinary, getExpandedPath } from '@/lib/platform';
+import { findClaudeBinary, getExpandedPath } from '@/lib/platform';
 
 const execFileAsync = promisify(execFile);
 
@@ -61,7 +61,7 @@ export async function GET() {
       return NextResponse.json({ models: cachedModels });
     }
 
-    const agentPath = findAgentBinary();
+    const agentPath = findClaudeBinary();
     if (!agentPath) {
       return NextResponse.json(
         { error: 'Cursor Agent CLI not found' },

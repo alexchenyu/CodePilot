@@ -217,6 +217,7 @@ export const ReasoningContent = memo(
       )}
       {...props}
     >
+      {/* @ts-expect-error Streamdown props mismatch with CollapsibleContent spread */}
       <Streamdown plugins={streamdownPlugins} {...props}>
         {children}
       </Streamdown>

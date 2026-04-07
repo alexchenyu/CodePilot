@@ -342,6 +342,7 @@ export function UsageStatsSection() {
                 width={54}
               />
               <Tooltip
+                // @ts-expect-error recharts Tooltip payload type mismatch with custom content
                 content={(props) => <ChartTooltip {...props} />}
                 cursor={{ fill: "var(--color-accent)", opacity: 0.3 }}
               />
